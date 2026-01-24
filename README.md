@@ -9,6 +9,11 @@ Key Features
 *   **Auto-updating Opentrack:** Automatically fetches and extracts the latest portable Windows version.
     
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
+
+```
+You need a working copy of Simhub, I installed it as a non-steam game and got the game id.  You will want to edit this into your script.
+For help installing it on linux go here: https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86
+```
     
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
     
