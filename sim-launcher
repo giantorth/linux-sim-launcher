@@ -65,9 +65,9 @@ LAUNCHERHOME = join(APPHOME, ".local/share/sim-launcher")
 OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
 SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
 SIMHUB_DEFAULT_PFX = expanduser("~/.local/share/Steam/steamapps/compatdata")
-SIMSHM = "/home/rorth/git/simshmbridge/assets/"
-ACSIMSHM = "/home/rorth/git/simshmbridge/assets/acshm"
-ACSIMSHMBRIDGE = "/home/rorth/git/simshmbridge/assets/acbridge.exe"
+SIMSHM = join( APPHOME, "git/simshmbridge/assets/" )
+ACSIMSHM = join( APPHOME, "git/simshmbridge/assets/acshm" )
+ACSIMSHMBRIDGE = join( APPHOME, "git/simshmbridge/assets/acbridge.exe" )
 ACPROTONBRIDGE = ""
 ZIPBINARY = ""
 
