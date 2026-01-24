@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+
+from os.path import join, isfile, isdir, abspath, expanduser, dirname
+from pathlib import Path
+from os import makedirs, mkdir, environ, remove
+from sys import argv, stdout
+from urllib.request import urlopen, urlretrieve
+from urllib.error import URLError
+from shutil import which, rmtree
+from subprocess import Popen
+import json
+import argparse
+import logging
+from datetime import datetime
+import signal
+import os
+
+# --- Logging Setup ---
+def setup_logging(debug_enabled):
+    logger = logging.getLogger("sim-launcher")
+    logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
+
+    # Console Handler
+    c_handler = logging.StreamHandler(stdout)
+    c_format = logging.Formatter('[sim-launcher] %(levelname)s: %(message)s')
+    c_handler.setFormatter(c_format)
+    logger.addHandler(c_handler)
+
+    if debug_enabled:
+        # File Handler: log_timestamp.log in program folder
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = join(LAUNCHERHOME, f"log_{timestamp}.log")
+        f_handler = logging.FileHandler(log_filename)
+        f_format = logging.Formatter('%(asctime)s - [sim-launcher] %(levelname)s: %(message)s')
+        f_handler.setFormatter(f_format)
+        logger.addHandler(f_handler)
+        logger.info(f"Debug logging enabled. Writing to {log_filename}")
+
+    return logger
+
+# Global logger placeholder
+log = None
+
+def panic(msg):
+    log.critical(msg)
+    exit(-1)
+
+def error(msg):
+    log.error(msg)
+
+def info(msg):
+    log.info(msg)
+
+def getenv(name, default=None):
+    try:
+        return environ[name]
+    except KeyError:
+        if default is not None:
+            return default
+        panic("environment variable " + name + " not found")
+
+APPIDSIG = "AppId="
+APPHOME = getenv("HOME") if not isfile("/.flatpak-info") else join(getenv("HOME"), ".var/app/com.valvesoftware.Steam")
+LAUNCHERHOME = join(APPHOME, ".local/share/sim-launcher")
+OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
+SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
+SIMHUB_DEFAULT_PFX = expanduser("~/.local/share/Steam/steamapps/compatdata")
+SIMSHM = "/home/rorth/git/simshmbridge/assets/"
+ACSIMSHM = "/home/rorth/git/simshmbridge/assets/acshm"
+ACSIMSHMBRIDGE = "/home/rorth/git/simshmbridge/assets/acbridge.exe"
+ACPROTONBRIDGE = ""
+ZIPBINARY = ""
+
+# Command line arguments
+parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
+parser.add_argument('--opentrack', action='store_true', help='Launch OpenTrack')
+parser.add_argument('--simhub', default=True, action='store_true', help='Launch SimHub')
+parser.add_argument('--simhub-pfx', default=SIMHUB_DEFAULT_PFX, help='Path to Steam pfx for SimHub')
+parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
+parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')
+parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
+parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
+parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
+args, unknown_args = parser.parse_known_args()
+
+# Initialize Logger
+log = setup_logging(args.debug)
+
+# Restore original argv for Steam compatibility
+# Note: Keep sys.argv assignment to maintain compatibility with findappid logic
+argv_original = argv[:1] + unknown_args
+
+def findappid():
+    appid = ""
+    for arg in argv_original:
+        if APPIDSIG in arg:
+            appid = arg[len(APPIDSIG):]
+    if appid == "":
+        error("appid not found, falling back to executable name")
+        appid = argv_original[-1]
+        if not appid.endswith(".exe"):
+            panic("could not find a valid Windows executable name")
+    info("launching app with id " + str(appid) + "...")
+    return appid
+
+def isnewer(ver):
+    versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
+    if not isfile(versionfile):
+        with open(versionfile, mode="w") as f:
+            f.write(ver)
+        return True
+    with open(versionfile, mode="r+") as f:
+        fver = f.read()
+        return fver != ver
+
+def updateversionfile(ver):
+    versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
+    with open(versionfile, mode="w") as f:
+        f.write(ver)
+
+def removeversionfile():
+    versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
+    if isfile(versionfile):
+        remove(versionfile)
+
+def dlopentrack():
+    info("checking if opentrack is up to date...")
+    try:
+        content = urlopen(OPENTRACKURL).read().decode("UTF-8")
+        latest = json.loads(content)
+    except Exception as e:
+        error("could not get opentrack release manifest: " + str(e))
+        return
+
+    version = latest["tag_name"].split("-")[1]
+    if isnewer(version):
+        info("downloading the latest opentrack version...")
+        for asset in latest["assets"]:
+            if asset["name"].endswith("portable.7z"):
+                opentrackark = join(LAUNCHERHOME, "opentrack.7z")
+                urlretrieve(asset["browser_download_url"], opentrackark)
+                opentrackinstall = join(LAUNCHERHOME, "install")
+                if isdir(opentrackinstall):
+                    rmtree(opentrackinstall)
+                err = Popen([which(ZIPBINARY), "x", "-aoa", "-o" + LAUNCHERHOME, opentrackark], cwd=LAUNCHERHOME).wait()
+                remove(opentrackark)
+                if err != 0:
+                    panic("failed to extract 7z")
+    updateversionfile(version)
+
+def getopentrack():
+    if not args.opentrack:
+        return None
+    dlopentrack()
+    opentrackexec = join(LAUNCHERHOME, "install/opentrack.exe")
+    return opentrackexec if isfile(opentrackexec) else None
+
+def getsimhub():
+    if not args.simhub:
+        return None
+
+    simhub_pfx_path = join(args.simhub_pfx, args.simhub_appid, "pfx/drive_c")
+
+    possible_paths = [
+        join(simhub_pfx_path, "program files/SimHub", args.simhub_exe),
+        join(simhub_pfx_path, "Program Files (x86)/SimHub", args.simhub_exe),
+        join(simhub_pfx_path, "users/steamuser/Desktop/SimHub", args.simhub_exe),
+    ]
+
+    for path in possible_paths:
+        if isfile(path):
+            info(f"Found SimHub at: {path}")
+            return path
+
+    error(f"Could not find SimHub executable for AppID {args.simhub_appid}")
+    return None
+
+def towinepath(p):
+    if p is None: return ""
+    return "Z:" + abspath(p).replace("/", "\\")
+
+def findappcmdline():
+    cmdline = ""
+    for arg in reversed(argv_original):
+        cmdline = arg + " " + cmdline
+        if arg.endswith(".exe"): break
+    return cmdline.strip()
+
+def getlaunchscript(appid, opentrackexec):
+    global ACPROTONBRIDGE
+    scripts = join(LAUNCHERHOME, "scripts")
+    if not isdir(scripts): makedirs(scripts, exist_ok=True)
+    script = join(scripts, appid + ".bat")
+
+    appcmdline = findappcmdline()
+    appsplitindex = appcmdline.index(".exe") + len(".exe")
+    appexec = appcmdline[:appsplitindex]
+    appargs = appcmdline[appsplitindex:]
+
+    ACPROTONBRIDGE = join( SIMSHM, Path(appexec).name )
+
+    appwine = towinepath(appexec)
+    opentrackwine = towinepath(opentrackexec)
+    acbridgewine = towinepath(ACSIMSHMBRIDGE)
+
+    lines = []
+
+    if args.acbridge:
+        lines.append(f"start \"\" \"{acbridgewine}\"\r\n")
+
+    if opentrackexec:
+        lines.append(f"start \"\" \"{opentrackwine}\"\r\n")
+
+    lines.append(f"start /wait \"\" \"{appwine}\" {appargs}\r\n")
+
+    if opentrackexec:
+        lines.append("taskkill /IM opentrack.exe /F >nul 2>&1\r\n")
+
+    if args.acbridge:
+        lines.append("taskkill /IM acbridge.exe /F >nul 2>&1\r\n")
+
+    with open(script, mode="w") as f:
+        f.writelines(lines)
+    return script
+
+def makehome():
+    if not isdir(LAUNCHERHOME):
+        makedirs(LAUNCHERHOME, exist_ok=True)
+
+def check7z():
+    global ZIPBINARY
+    ZIPBINARY = which("7z") or which("7za")
+    if not ZIPBINARY: panic("7z is not installed")
+
+import os
+import signal
+import subprocess
+
+if __name__ == '__main__':
+    check7z()
+    makehome()
+
+    appid = findappid()
+    opentrackexec = getopentrack()
+    simhubexec = getsimhub()
+
+    launcherscript = getlaunchscript(appid, opentrackexec)
+
+    if args.lookpilot:
+        info("Launching LookPilot...")
+        Popen(["steam", "steam://rungameid/3326890"])
+
+    # 1. Start ACSIMSHM (Native Linux) in its own process group
+    ac_shm_proc = None
+    if args.acbridge:
+        info("Launching AC Bridge (Native)")
+        # os.setpgrp allows us to kill this and all its children as a group later
+        ac_shm_proc = Popen(ACSIMSHM, preexec_fn=os.setpgrp)
+
+    # 2. Prepare and launch the main game
+    final_argv = list(argv_original)
+    for i in range(len(final_argv) - 1, -1, -1):
+        if final_argv[i].endswith(".exe"):
+            final_argv[i] = launcherscript
+            break
+
+    info(f"Final execution command: {' '.join(final_argv[1:])}")
+    main_game_proc = Popen(final_argv[1:])
+
+    # 3. Launch SimHub and Proton Bridge
+    if args.simhub and simhubexec:
+        pt_launcher = which("protontricks-launch")
+        if pt_launcher:
+            clean_env = environ.copy()
+            for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
+                clean_env.pop(var, None)
+
+            if os.path.exists(ACPROTONBRIDGE):
+                os.remove(ACPROTONBRIDGE)
+            os.link(ACSIMSHMBRIDGE, ACPROTONBRIDGE)
+
+            info(f"Launching Proton Bridge for SimHub: {ACPROTONBRIDGE}")
+            Popen([pt_launcher, "--appid", str(args.simhub_appid), ACPROTONBRIDGE],
+                  env=clean_env, start_new_session=True)
+
+            info(f"Launching SimHub: {args.simhub_exe}")
+            Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
+                  env=clean_env, start_new_session=True)
+
+    # --- THE CLEANUP LOGIC ---
+    try:
+        info("Waiting for main game to exit...")
+        main_game_proc.wait()
+    except KeyboardInterrupt:
+        info("Shutdown requested via keyboard...")
+    finally:
+        info("Main game closed. Initiating global cleanup...")
+
+        # A. Kill Native Linux Bridge Group
+        if ac_shm_proc:
+            try:
+                # Kills the group leader and every child process it spawned
+                os.killpg(os.getpgid(ac_shm_proc.pid), signal.SIGTERM)
+            except:
+                pass
+
+        # B. Kill all Windows/Wine executables by name
+        # We use -9 (SIGKILL) to ensure they stop immediately
+        targets = [
+            "acbridge.exe",
+            "opentrack.exe",
+            "SimHubWPF.exe",
+            Path(ACPROTONBRIDGE).name
+        ]
+
+        for exe in targets:
+            if exe:
+                info(f"Terminating {exe}...")
+                # -f looks at the full command line argument (useful for Wine)
+                subprocess.run(["pkill", "-9", "-f", exe], stderr=subprocess.DEVNULL)
+
+        # C. Remove the symlink
+        if os.path.exists(ACPROTONBRIDGE):
+            try:
+                os.remove(ACPROTONBRIDGE)
+                info("Cleaned up bridge symlink.")
+            except:
+                pass
+
+    info("Cleanup complete. Exiting.")
