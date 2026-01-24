@@ -12,9 +12,9 @@ Key Features
 
 ```
 You need a working copy of Simhub, I installed it as a non-steam game and got the game id.  You will want to edit this into your script.
-For help installing it on linux go here: https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86
 ```
-    
+Click [here](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) for help installing SimHub on linux
+
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
     
 *   **LookPilot Support:** Toggle-able launch for LookPilot (AppID 3326890).
