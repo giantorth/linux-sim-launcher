@@ -74,7 +74,7 @@ ZIPBINARY = ""
 # Command line arguments
 parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
 parser.add_argument('--opentrack', action='store_true', help='Launch OpenTrack')
-parser.add_argument('--simhub', default=True, action='store_true', help='Launch SimHub')
+parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
 parser.add_argument('--simhub-pfx', default=SIMHUB_DEFAULT_PFX, help='Path to Steam pfx for SimHub')
 parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
 parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')

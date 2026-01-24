@@ -1,7 +1,7 @@
 Linux Sim Launcher
 ==================
 
-A Python-based utility to synchronize the launch and cleanup of Windows-based simulation tools (**Opentrack, SimHub, LookPilot**) alongside Steam games. It ensures these tools run in the correct Proton prefix and provides an **AC SHM Bridge** for shared memory support on Linux.
+A Python-based utility to synchronize the launch and cleanup of Windows-based simulation tools (**Opentrack, SimHub, LookPilot**) alongside Steam games. It ensures these tools run in the correct Proton prefix and provides an **Assetto Corsa SHM Bridge** for shared memory support on Linux.  This solves the need to run SimHub in a single prefix to simplify licensing and configuration instead of installing it in every game prefix.
 
 Key Features
 ------------
@@ -9,11 +9,6 @@ Key Features
 *   **Auto-updating Opentrack:** Automatically fetches and extracts the latest portable Windows version.
     
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
-
-```
-You need a working copy of Simhub, I installed it as a non-steam game and got the game id.  You will want to edit this into your script.
-```
-Click [here](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) for help installing SimHub on linux
 
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
     
@@ -39,7 +34,7 @@ Dependencies
 Installation
 ------------
 
-Open a terminal and choose one of the following methods:
+* Open a terminal and choose one of the following methods to install this script:
 
 ```bash
 # Recommended: Local Install
@@ -47,13 +42,28 @@ $ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linu
 # Alternative: System-wide (Requires sudo)
 $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher   
 ```
+* Ensure you have compiled a working copy of [simshmbridge](https://github.com/spacefreak18/simshmbridge), follow directions on that repo to have the required tools.
 
-**Assumes you have a compiled version of simshmbridge in $HOME/git/simshmbridge, edit the script as necessary.**
+  * If you don't have it, install protontricks from your distro's package repo.
+
+* Install simhub in it's own Steam prefix:
+
+    1. Add the SimHub installer to Steam as a **non-steam game** 
+    2. Edit the properties to set compatability options to a GE-Proton (better dotnet compatability)
+    2. Locate the appid for this new prefix (Tell steam to add it as a desktop shortcut and inspect the properties for the ID)
+    3. Install dotnet48 in this prefix (Replace ID_OF_SIMHUB with correct value)
+
+    ```bash
+    $ WINEPREFIX=~/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx winetricks -q --force dotnet48
+    ```
+    4. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
+    5. Ensure SimHub launches correctly from Steam
+    6. Edit the script parser arguments to add your unique SimHub appid as the default (if desired)
 
 Usage in Steam
 --------------
 
-1.  Right-click your game in Steam -> **Properties**.
+1.  Right-click your desired game in Steam -> **Properties**.
     
 2.  In the **Launch Options** field, enter the command below.
     
@@ -62,19 +72,26 @@ Usage in Steam
 
 `  ~/.local/bin/sim-launcher %command%   `
 
-### Advanced Usage (Flags)
+Or if you installed it for all users:
+
+`  sim-launcher %command%   `
+
+### Script flags
 
 You can append flags to the launcher to enable specific tools:
 
 | Flag | Description |
 |---|---|
 | --opentrack | Download (if needed) and launch Opentrack. |
-| --simhubLaunch | SimHub (enabled by default). |
-| --acbridge | Launch the Assetto Corsa Shared Memory Bridge. |
+| --simhub | Launch SimHub from its own Proton prefix. |
+| --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
 | --lookpilot | Launch LookPilot via Steam. | 
 | --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
+| --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
+| --simhub-pfx | Path to your Steam compatdata folder. |
+| --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
 
-**Example for a full Sim Racing setup:**
+**Example setup:**
 
 `   ~/.local/bin/sim-launcher --opentrack --acbridge %command%   `
 
@@ -91,16 +108,6 @@ The launcher manages its own environment in ~/.local/share/sim-launcher:
    ├── opentrack-version.txt   # Tracks installed Opentrack version for updates  
    └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)   
 ```
-
-### SimHub Configuration
-
-If your SimHub is installed in a non-standard Steam AppID or path, you can use these flags:
-
-*   \--simhub-appid: Set the Steam AppID for the SimHub prefix (Default: 2825720939).
-    
-*   \--simhub-pfx: Path to your Steam compatdata folder.
-    
-*   \--simhub-exe: The name of the SimHub executable (Default: SimHubWPF.exe).
     
 
 How it Works
