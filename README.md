@@ -35,10 +35,12 @@ Installation
 ------------
 
 Open a terminal and choose one of the following methods:
- 
-```
-   # Recommended: Local Install  mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher  
-   # Alternative: System-wide (Requires sudo)  sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher   
+
+```bash
+# Recommended: Local Install
+$ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher  
+# Alternative: System-wide (Requires sudo)
+$ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher   
 ```
 
 **Assumes you have a compiled version of simshmbridge in $HOME/git/simshmbridge, edit the script as necessary.**
