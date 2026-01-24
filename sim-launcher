@@ -219,6 +219,10 @@ def getlaunchscript(appid, opentrackexec):
     if args.acbridge:
         lines.append("taskkill /IM acbridge.exe /F >nul 2>&1\r\n")
 
+    if args.lookpilot:
+        lines.append("taskkill /IM start.exe /F >nul 2>&1\r\n")
+        lines.append("taskkill /IM TrackIR.exe /F >nul 2>&1\r\n")
+
     with open(script, mode="w") as f:
         f.writelines(lines)
     return script
@@ -311,6 +315,8 @@ if __name__ == '__main__':
             "acbridge.exe",
             "opentrack.exe",
             "SimHubWPF.exe",
+            "TrackIR.exe",
+            "LookPilot",
             Path(ACPROTONBRIDGE).name
         ]
 
