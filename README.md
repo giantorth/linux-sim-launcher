@@ -29,7 +29,6 @@ Dependencies
 *   **[simshmbridge](https://github.com/spacefreak18/simshmbridge)** - Required for AC/ACE/ACR briding to simhub
     
 *   **wget** - For installation.
-    
 
 Installation
 ------------
@@ -59,6 +58,10 @@ $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/maste
     4. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
     5. Ensure SimHub launches correctly from Steam
     6. Edit the script parser arguments to add your unique SimHub appid as the default (if desired)
+
+Potential Issues
+----------------
+Some games require additional configuration to support SimHub.  Normally SimHub would configure this automatically for you but is unable to when running in it's own prefix.  Either look up instructions on how to manually configure the game, or follow [these directions](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) to install a demo copy in a game's prefix so it is able to auto-configure the game for you.
 
 Usage in Steam
 --------------
