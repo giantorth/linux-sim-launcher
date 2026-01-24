@@ -248,7 +248,7 @@ if __name__ == '__main__':
 
     if args.lookpilot:
         info("Launching LookPilot...")
-        Popen(["steam", "steam://rungameid/3326890"])
+        lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
 
     # 1. Start ACSIMSHM (Native Linux) in its own process group
     ac_shm_proc = None
@@ -275,13 +275,14 @@ if __name__ == '__main__':
             for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
                 clean_env.pop(var, None)
 
-            if os.path.exists(ACPROTONBRIDGE):
-                os.remove(ACPROTONBRIDGE)
-            os.link(ACSIMSHMBRIDGE, ACPROTONBRIDGE)
+            if args.acbridge:
+                if os.path.exists(ACPROTONBRIDGE):
+                    os.remove(ACPROTONBRIDGE)
+                os.link(ACSIMSHMBRIDGE, ACPROTONBRIDGE)
 
-            info(f"Launching Proton Bridge for SimHub: {ACPROTONBRIDGE}")
-            Popen([pt_launcher, "--appid", str(args.simhub_appid), ACPROTONBRIDGE],
-                  env=clean_env, start_new_session=True)
+                info(f"Launching Proton Bridge for SimHub: {ACPROTONBRIDGE}")
+                Popen([pt_launcher, "--appid", str(args.simhub_appid), ACPROTONBRIDGE],
+                    env=clean_env, start_new_session=True)
 
             info(f"Launching SimHub: {args.simhub_exe}")
             Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
