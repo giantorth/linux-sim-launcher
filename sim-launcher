@@ -68,7 +68,9 @@ SIMHUB_DEFAULT_PFX = expanduser("~/.local/share/Steam/steamapps/compatdata")
 SIMSHM = join( APPHOME, "git/simshmbridge/assets/" )
 ACSIMSHM = join( APPHOME, "git/simshmbridge/assets/acshm" )
 ACSIMSHMBRIDGE = join( APPHOME, "git/simshmbridge/assets/acbridge.exe" )
-ACPROTONBRIDGE = ""
+PC2SIMSHM = join( APPHOME, "git/simshmbridge/assets/pcars2shm" )
+PC2SIMSHMBRIDGE = join( APPHOME, "git/simshmbridge/assets/pcars2bridge.exe" )
+PROTONBRIDGE = ""
 ZIPBINARY = ""
 
 # Command line arguments
@@ -80,6 +82,7 @@ parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub execut
 parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
 parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
+parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
 parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
 args, unknown_args = parser.parse_known_args()
 
@@ -187,7 +190,7 @@ def findappcmdline():
     return cmdline.strip()
 
 def getlaunchscript(appid, opentrackexec):
-    global ACPROTONBRIDGE
+    global PROTONBRIDGE
     scripts = join(LAUNCHERHOME, "scripts")
     if not isdir(scripts): makedirs(scripts, exist_ok=True)
     script = join(scripts, appid + ".bat")
@@ -196,28 +199,59 @@ def getlaunchscript(appid, opentrackexec):
     appsplitindex = appcmdline.index(".exe") + len(".exe")
     appexec = appcmdline[:appsplitindex]
     appargs = appcmdline[appsplitindex:]
+    app_exe_name = Path(appexec).name
 
-    ACPROTONBRIDGE = join( SIMSHM, Path(appexec).name )
+    PROTONBRIDGE = join( SIMSHM, Path(appexec).name )
 
     appwine = towinepath(appexec)
     opentrackwine = towinepath(opentrackexec)
     acbridgewine = towinepath(ACSIMSHMBRIDGE)
+    pc2bridgewine = towinepath(PC2SIMSHMBRIDGE)
 
     lines = []
 
     if args.acbridge:
         lines.append(f"start \"\" \"{acbridgewine}\"\r\n")
 
+    if args.pc2bridge:
+        lines.append(f"start \"\" \"{pc2bridgewine}\"\r\n")
+
     if opentrackexec:
         lines.append(f"start \"\" \"{opentrackwine}\"\r\n")
 
-    lines.append(f"start /wait \"\" \"{appwine}\" {appargs}\r\n")
+    # 2. Launch Logic (Conditional on pc2bridge)
+    if args.pc2bridge:
+        # ASYNC Launch for AMS2/PCars2
+        lines.append(f"start \"\" \"{appwine}\" {appargs}\r\n")
+        # Apparently no pause.exe in wine?
+        lines.append("ping -n 7 127.0.0.1 >nul\r\n")
+        
+        # MONITORING LOOP
+        lines.append(":LOOP\r\n")
+        lines.append("ping -n 7 127.0.0.1 >nul\r\n")
+        lines.append("set STILL_RUNNING=0\r\n")
+        
+        # Check original and AVX variant
+        lines.append(f"tasklist /FI \"IMAGENAME eq {app_exe_name}\" 2>NUL | findstr /I /C:\"{app_exe_name}\"\r\n")
+        lines.append("if %ERRORLEVEL% EQU 0 set STILL_RUNNING=1\r\n")
+        
+        avx_exe = app_exe_name.replace(".exe", "AVX.exe")
+        lines.append(f"tasklist /FI \"IMAGENAME eq {avx_exe}\" 2>NUL | findstr /I /C:\"{avx_exe}\" \r\n")
+        lines.append("if %ERRORLEVEL% EQU 0 set STILL_RUNNING=1\r\n")
+        
+        lines.append("if %STILL_RUNNING% EQU 1 goto LOOP\r\n")
+    else:
+        # STANDARD SYNC Launch for everything else
+        lines.append(f"start /wait \"\" \"{appwine}\" {appargs}\r\n")
 
     if opentrackexec:
         lines.append("taskkill /IM opentrack.exe /F >nul 2>&1\r\n")
 
     if args.acbridge:
         lines.append("taskkill /IM acbridge.exe /F >nul 2>&1\r\n")
+
+    if args.pc2bridge:
+        lines.append("taskkill /IM pcars2bridge.exe /F >nul 2>&1\r\n")
 
     if args.lookpilot:
         lines.append("taskkill /IM start.exe /F >nul 2>&1\r\n")
@@ -261,6 +295,13 @@ if __name__ == '__main__':
         # os.setpgrp allows us to kill this and all its children as a group later
         ac_shm_proc = Popen(ACSIMSHM, preexec_fn=os.setpgrp)
 
+    # 1. Start PC2SIMSHM (Native Linux) in its own process group
+    pc2_shm_proc = None
+    if args.pc2bridge:
+        info("Launching PC2 Bridge (Native)")
+        # os.setpgrp allows us to kill this and all its children as a group later
+        pc2_shm_proc = Popen(PC2SIMSHM, preexec_fn=os.setpgrp)
+
     # 2. Prepare and launch the main game
     final_argv = list(argv_original)
     for i in range(len(final_argv) - 1, -1, -1):
@@ -280,17 +321,26 @@ if __name__ == '__main__':
                 clean_env.pop(var, None)
 
             if args.acbridge:
-                if os.path.exists(ACPROTONBRIDGE):
-                    os.remove(ACPROTONBRIDGE)
-                os.link(ACSIMSHMBRIDGE, ACPROTONBRIDGE)
+                if os.path.exists(PROTONBRIDGE):
+                    os.remove(PROTONBRIDGE)
+                os.link(ACSIMSHMBRIDGE, PROTONBRIDGE)
 
-                info(f"Launching Proton Bridge for SimHub: {ACPROTONBRIDGE}")
-                Popen([pt_launcher, "--appid", str(args.simhub_appid), ACPROTONBRIDGE],
-                    env=clean_env, start_new_session=True)
+                info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
+                Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
+                    env=clean_env, start_new_session=False)
+
+            if args.pc2bridge:
+                if os.path.exists(PROTONBRIDGE):
+                    os.remove(PROTONBRIDGE)
+                os.link(PC2SIMSHMBRIDGE, PROTONBRIDGE)
+
+                info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
+                Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
+                    env=clean_env, start_new_session=False)
 
             info(f"Launching SimHub: {args.simhub_exe}")
             Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
-                  env=clean_env, start_new_session=True)
+                  env=clean_env, start_new_session=False)
 
     # --- THE CLEANUP LOGIC ---
     try:
@@ -308,7 +358,20 @@ if __name__ == '__main__':
                 os.killpg(os.getpgid(ac_shm_proc.pid), signal.SIGTERM)
             except:
                 pass
-
+            info("Cleaning up shm files")
+            os.remove("/dev/shm/acpmf_crewchief")
+            os.remove("/dev/shm/acpmf_graphics")
+            os.remove("/dev/shm/acpmf_physics")
+            os.remove("/dev/shm/acpmf_static")
+         
+        if pc2_shm_proc:
+            try:
+                # Kills the group leader and every child process it spawned
+                os.killpg(os.getpgid(ac_shm_proc.pid), signal.SIGTERM)
+            except:
+                pass
+            info("NOT Cleaning up shm files")
+         
         # B. Kill all Windows/Wine executables by name
         # We use -9 (SIGKILL) to ensure they stop immediately
         targets = [
@@ -317,7 +380,7 @@ if __name__ == '__main__':
             "SimHubWPF.exe",
             "TrackIR.exe",
             "LookPilot",
-            Path(ACPROTONBRIDGE).name
+            Path(PROTONBRIDGE).name
         ]
 
         for exe in targets:
@@ -326,10 +389,10 @@ if __name__ == '__main__':
                 # -f looks at the full command line argument (useful for Wine)
                 subprocess.run(["pkill", "-9", "-f", exe], stderr=subprocess.DEVNULL)
 
-        # C. Remove the symlink
-        if os.path.exists(ACPROTONBRIDGE):
+        # C. Remove the hardlink
+        if os.path.exists(PROTONBRIDGE):
             try:
-                os.remove(ACPROTONBRIDGE)
+                os.remove(PROTONBRIDGE)
                 info("Cleaned up bridge symlink.")
             except:
                 pass

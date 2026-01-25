@@ -11,6 +11,8 @@ Key Features
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
 
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
+
+*   **PC2 Bridge:** Supports Automobilista 2/Project Cars 2 shared memory bridging (Native + Proton components).
     
 *   **LookPilot Support:** Toggle-able launch for LookPilot (AppID 3326890).
     
@@ -88,6 +90,7 @@ You can append flags to the launcher to enable specific tools:
 | --opentrack | Download (if needed) and launch Opentrack. |
 | --simhub | Launch SimHub from its own Proton prefix. |
 | --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
+| --pc2bridge | Launch the Project Cars 2 (Automobilista 2) Shared Memory Bridge. |
 | --lookpilot | Launch LookPilot via Steam. | 
 | --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
 | --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
@@ -120,6 +123,6 @@ How it Works
     
 2.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
     
-3.  **Bridges:** It handles the symlinking and execution of the AC Bridge between the Linux environment and the Wine prefix.
+3.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
     
 4.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
