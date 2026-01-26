@@ -320,23 +320,17 @@ if __name__ == '__main__':
             for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
                 clean_env.pop(var, None)
 
+            if os.path.exists(PROTONBRIDGE):
+                os.remove(PROTONBRIDGE)
+
             if args.acbridge:
-                if os.path.exists(PROTONBRIDGE):
-                    os.remove(PROTONBRIDGE)
                 os.link(ACSIMSHMBRIDGE, PROTONBRIDGE)
-
-                info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
-                Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
-                    env=clean_env, start_new_session=False)
-
-            if args.pc2bridge:
-                if os.path.exists(PROTONBRIDGE):
-                    os.remove(PROTONBRIDGE)
+            else:
                 os.link(PC2SIMSHMBRIDGE, PROTONBRIDGE)
 
-                info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
-                Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
-                    env=clean_env, start_new_session=False)
+            info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
+            bridge_proc = Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
+                env=clean_env, start_new_session=False)
 
             info(f"Launching SimHub: {args.simhub_exe}")
             Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
@@ -367,11 +361,15 @@ if __name__ == '__main__':
         if pc2_shm_proc:
             try:
                 # Kills the group leader and every child process it spawned
-                os.killpg(os.getpgid(ac_shm_proc.pid), signal.SIGTERM)
+                os.killpg(os.getpgid(pc2_shm_proc.pid), signal.SIGTERM)
             except:
                 pass
             info("NOT Cleaning up shm files")
-         
+
+        if args.simhub:
+            info("Killing Proton Bridge for Simhub")
+            bridge_proc.terminate()
+
         # B. Kill all Windows/Wine executables by name
         # We use -9 (SIGKILL) to ensure they stop immediately
         targets = [
@@ -379,22 +377,30 @@ if __name__ == '__main__':
             "opentrack.exe",
             "SimHubWPF.exe",
             "TrackIR.exe",
-            "LookPilot",
-            Path(PROTONBRIDGE).name
+            "LookPilot"
+            # Path(PROTONBRIDGE).name
         ]
 
         for exe in targets:
             if exe:
                 info(f"Terminating {exe}...")
                 # -f looks at the full command line argument (useful for Wine)
-                subprocess.run(["pkill", "-9", "-f", exe], stderr=subprocess.DEVNULL)
-
+                try:
+                    subprocess.run(["pkill", "-9", "-f", exe])#, stderr=subprocess.DEVNULL)
+                    info(f"Killed {exe}...")
+                except:
+                    info(f"Failed to kill {exe}")
+ 
+        info("Finished Killing")
         # C. Remove the hardlink
+        info(f"Cleaning up {PROTONBRIDGE}")
         if os.path.exists(PROTONBRIDGE):
             try:
                 os.remove(PROTONBRIDGE)
                 info("Cleaned up bridge symlink.")
             except:
                 pass
+        else:
+            info(f"Couldn't clean up {PROTONBRIDGE}")
 
     info("Cleanup complete. Exiting.")
