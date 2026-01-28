@@ -7,13 +7,15 @@ from sys import argv, stdout
 from urllib.request import urlopen, urlretrieve
 from urllib.error import URLError
 from shutil import which, rmtree
-from subprocess import Popen
+from subprocess import Popen, PIPE, DEVNULL
 import json
 import argparse
 import logging
 from datetime import datetime
 import signal
 import os
+import subprocess
+import time
 
 # --- Logging Setup ---
 def setup_logging(debug_enabled):
@@ -271,9 +273,70 @@ def check7z():
     ZIPBINARY = which("7z") or which("7za")
     if not ZIPBINARY: panic("7z is not installed")
 
-import os
-import signal
-import subprocess
+def kill_process_tree(pid, timeout=5):
+    """
+    Kills a process and all its children gracefully, then forcefully if needed.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        # Try graceful SIGTERM first
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        
+        # Wait for process to exit
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                os.killpg(os.getpgid(pid), 0)  # Check if group still exists
+                time.sleep(0.1)
+            except ProcessLookupError:
+                return True  # Process group is gone
+        
+        # If still running, force kill
+        info(f"Process {pid} didn't exit gracefully, forcing SIGKILL")
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+        return True
+    except ProcessLookupError:
+        return True  # Already dead
+    except Exception as e:
+        error(f"Error killing process {pid}: {e}")
+        return False
+
+def kill_by_name(name, force=False):
+    """
+    Kill processes by name. Uses pkill with proper error handling.
+    Returns True if at least one process was found and killed.
+    """
+    try:
+        # First check if any processes exist
+        check_cmd = ["pgrep", "-f", name]
+        result = subprocess.run(check_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            # No processes found
+            return False
+        
+        pids = result.stdout.strip().split('\n')
+        info(f"Found {len(pids)} process(es) matching '{name}': {', '.join(pids)}")
+        
+        # Kill processes
+        signal_flag = "-9" if force else "-TERM"
+        kill_cmd = ["pkill", signal_flag, "-f", name]
+        subprocess.run(kill_cmd, capture_output=True)
+        
+        # Wait a bit and verify
+        time.sleep(0.5)
+        verify_result = subprocess.run(check_cmd, capture_output=True)
+        
+        if verify_result.returncode == 0 and not force:
+            # Processes still running, try force kill
+            info(f"Processes still running, forcing kill for '{name}'")
+            subprocess.run(["pkill", "-9", "-f", name], capture_output=True)
+            time.sleep(0.5)
+        
+        return True
+    except Exception as e:
+        error(f"Error killing processes by name '{name}': {e}")
+        return False
 
 if __name__ == '__main__':
     check7z()
@@ -285,6 +348,7 @@ if __name__ == '__main__':
 
     launcherscript = getlaunchscript(appid, opentrackexec)
 
+    lookpilot_proc = None
     if args.lookpilot:
         info("Launching LookPilot...")
         lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
@@ -293,17 +357,18 @@ if __name__ == '__main__':
     ac_shm_proc = None
     if args.acbridge:
         info("Launching AC Bridge (Native)")
-        # os.setpgrp allows us to kill this and all its children as a group later
-        ac_shm_proc = Popen(ACSIMSHM, preexec_fn=os.setpgrp)
+        # Use start_new_session instead of setpgrp for better process isolation
+        ac_shm_proc = Popen(ACSIMSHM, start_new_session=True, 
+                           stdout=DEVNULL, stderr=DEVNULL)
 
-    # 1. Start PC2SIMSHM (Native Linux) in its own process group
+    # 2. Start PC2SIMSHM (Native Linux) in its own process group
     pc2_shm_proc = None
     if args.pc2bridge:
         info("Launching PC2 Bridge (Native)")
-        # os.setpgrp allows us to kill this and all its children as a group later
-        pc2_shm_proc = Popen(PC2SIMSHM, preexec_fn=os.setpgrp)
+        pc2_shm_proc = Popen(PC2SIMSHM, start_new_session=True,
+                            stdout=DEVNULL, stderr=DEVNULL)
 
-    # 2. Prepare and launch the main game
+    # 3. Prepare and launch the main game
     final_argv = list(argv_original)
     for i in range(len(final_argv) - 1, -1, -1):
         if final_argv[i].endswith(".exe"):
@@ -313,7 +378,9 @@ if __name__ == '__main__':
     info(f"Final execution command: {' '.join(final_argv[1:])}")
     main_game_proc = Popen(final_argv[1:])
 
-    # 3. Launch SimHub and Proton Bridge
+    # 4. Launch SimHub and Proton Bridge
+    bridge_proc = None
+    simhub_proc = None
     if args.simhub and simhubexec:
         pt_launcher = which("protontricks-launch")
         if pt_launcher:
@@ -330,20 +397,40 @@ if __name__ == '__main__':
                 os.link(PC2SIMSHMBRIDGE, PROTONBRIDGE)
 
             info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
+            # Store bridge_proc so we can track it properly
             bridge_proc = Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
-                env=clean_env, start_new_session=False)
+                env=clean_env, start_new_session=True,
+                stdout=DEVNULL, stderr=DEVNULL)
+
+            # Give bridge a moment to start
+            time.sleep(1)
 
             info(f"Launching SimHub: {args.simhub_exe}")
-            Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
-                  env=clean_env, start_new_session=False)
+            simhub_proc = Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
+                  env=clean_env, start_new_session=True,
+                  stdout=DEVNULL, stderr=DEVNULL)
 
+    # 5. Launch Monocoque
+    monocoque_proc = None
     if args.monocoque:
         info("Launching Monocoque")
+        
         monocoque_proc = Popen(["monocoque", "play"], 
-                            env=clean_env, 
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            text=True)
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                bufsize=1)
+
+        # Give it a moment to start properly
+        time.sleep(0.5)
+        monocoque_proc.stdin.close()
+
+        # Check if it started successfully
+        if monocoque_proc.poll() is not None:
+            error(f"Monocoque exited immediately with code {monocoque_proc.returncode}")
+        else:
+            info(f"Monocoque started successfully (PID: {monocoque_proc.pid})")
 
     # --- THE CLEANUP LOGIC ---
     try:
@@ -354,78 +441,83 @@ if __name__ == '__main__':
     finally:
         info("Main game closed. Initiating global cleanup...")
 
-        # A. Kill Native Linux Bridge Group
+        # A. Kill Native Linux Bridge Groups
         if ac_shm_proc:
-            try:
-                # Kills the group leader and every child process it spawned
-                os.killpg(os.getpgid(ac_shm_proc.pid), signal.SIGTERM)
-            except:
-                pass
-            info("Cleaning up shm files")
-            os.remove("/dev/shm/acpmf_crewchief")
-            os.remove("/dev/shm/acpmf_graphics")
-            os.remove("/dev/shm/acpmf_physics")
-            os.remove("/dev/shm/acpmf_static")
+            info("Terminating AC Bridge...")
+            kill_process_tree(ac_shm_proc.pid)
+            
+            # Clean up shm files
+            info("Cleaning up AC shm files")
+            for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics", 
+                           "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static"]:
+                try:
+                    if os.path.exists(shm_file):
+                        os.remove(shm_file)
+                except Exception as e:
+                    error(f"Failed to remove {shm_file}: {e}")
          
         if pc2_shm_proc:
-            try:
-                # Kills the group leader and every child process it spawned
-                os.killpg(os.getpgid(pc2_shm_proc.pid), signal.SIGTERM)
-            except:
-                pass
-            info("NOT Cleaning up shm files")
+            info("Terminating PC2 Bridge...")
+            kill_process_tree(pc2_shm_proc.pid)
 
+        # B. Kill Monocoque
+        if monocoque_proc:
+            info("Terminating Monocoque...")
+            if monocoque_proc.poll() is None:  # Still running
+                # kill_process_tree(monocoque_proc.pid)
+                monocoque_proc.kill()
+            else:
+                info(f"Monocoque already exited with code {monocoque_proc.returncode}")
+
+        # C. Kill SimHub and Bridge processes
         if args.simhub:
-            info("Killing Proton Bridge for Simhub")
-            bridge_proc.terminate()
-            bridge_proc.kill()
-
-        if args.monocoque:
-            info("Killing Monocoque")
-            if monocoque_proc and monocoque_proc.poll() is None:
+            info("Terminating SimHub...")
+            kill_by_name("SimHubWPF.exe")
+            
+            # FIX: Kill bridge by PID first if we have it, then by name as backup
+            if bridge_proc and bridge_proc.poll() is None:
+                info(f"Terminating Proton Bridge (PID: {bridge_proc.pid})...")
                 try:
-                    # Send SIGTERM to the entire process group
-                    os.killpg(os.getpgid(monocoque_proc.pid), signal.SIGTERM)
-                    # Wait a bit for graceful shutdown
-                    monocoque_proc.wait(timeout=5)
+                    bridge_proc.terminate()
+                    bridge_proc.wait(timeout=3)
+                    info("Bridge terminate successful")
                 except subprocess.TimeoutExpired:
-                    # Force kill if it doesn't exit gracefully
-                    os.killpg(os.getpgid(monocoque_proc.pid), signal.SIGKILL)
-                    monocoque_proc.wait()
-                except ProcessLookupError:
-                    pass  # Process already dead
+                    info("Bridge didn't exit, force killing...")
+                    bridge_proc.kill()
+                    bridge_proc.wait()
+                except Exception as e:
+                    error(f"Error terminating bridge: {e}")
+            
+            # # Backup: kill by bridge executable name
+            # if PROTONBRIDGE:
+            #     bridge_name = Path(PROTONBRIDGE).name
+            #     info(f"Ensuring proton bridge {bridge_name} is terminated...")
+            #     kill_by_name(bridge_name, force=True)
 
-        # B. Kill all Windows/Wine executables by name
-        # We use -9 (SIGKILL) to ensure they stop immediately
+        # D. Kill other Windows/Wine executables by name
         targets = [
             "acbridge.exe",
+            "pcars2bridge.exe",
             "opentrack.exe",
-            "SimHubWPF.exe",
             "TrackIR.exe",
-            "LookPilot"
-            # Path(PROTONBRIDGE).name
         ]
 
         for exe in targets:
-            if exe:
-                info(f"Terminating {exe}...")
-                # -f looks at the full command line argument (useful for Wine)
-                try:
-                    # subprocess.run(["pkill", "-9", "-f", exe])#, stderr=subprocess.DEVNULL)
-                    subprocess.run(["pkill", "-f", exe])#, stderr=subprocess.DEVNULL)
-                except:
-                    info(f"Failed to kill {exe}")
- 
-        info("Finished Killing")
-        # C. Remove the hardlink
-        info(f"Cleaning up {PROTONBRIDGE}")
-        if os.path.exists(PROTONBRIDGE):
+            if kill_by_name(exe):
+                info(f"Terminated {exe}")
+
+        # E. Kill LookPilot
+        if args.lookpilot:
+            info("Terminating LookPilot...")
+            kill_by_name("LookPilot")
+
+        # F. Remove the hardlink
+        if PROTONBRIDGE and os.path.exists(PROTONBRIDGE):
             try:
+                info(f"Cleaning up {PROTONBRIDGE}")
                 os.remove(PROTONBRIDGE)
-                info("Cleaned up bridge symlink.")
-            except:
-                pass
-        else:
-            info(f"Couldn't clean up {PROTONBRIDGE}")
+                info("Cleaned up bridge link.")
+            except Exception as e:
+                error(f"Failed to clean up {PROTONBRIDGE}: {e}")
 
     info("Cleanup complete. Exiting.")
