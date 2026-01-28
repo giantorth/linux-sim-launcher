@@ -424,7 +424,7 @@ if __name__ == '__main__':
 
         # Give it a moment to start properly
         time.sleep(0.5)
-        monocoque_proc.stdin.close()
+        # monocoque_proc.stdin.close()
 
         # Check if it started successfully
         if monocoque_proc.poll() is not None:
@@ -464,7 +464,6 @@ if __name__ == '__main__':
         if monocoque_proc:
             info("Terminating Monocoque...")
             if monocoque_proc.poll() is None:  # Still running
-                # kill_process_tree(monocoque_proc.pid)
                 monocoque_proc.kill()
             else:
                 info(f"Monocoque already exited with code {monocoque_proc.returncode}")
@@ -487,12 +486,6 @@ if __name__ == '__main__':
                     bridge_proc.wait()
                 except Exception as e:
                     error(f"Error terminating bridge: {e}")
-            
-            # # Backup: kill by bridge executable name
-            # if PROTONBRIDGE:
-            #     bridge_name = Path(PROTONBRIDGE).name
-            #     info(f"Ensuring proton bridge {bridge_name} is terminated...")
-            #     kill_by_name(bridge_name, force=True)
 
         # D. Kill other Windows/Wine executables by name
         targets = [
