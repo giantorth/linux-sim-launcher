@@ -10,6 +10,8 @@ Key Features
     
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
 
+*   **Monocoque**: Launch Monocoque with the game.
+
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
 
 *   **PC2 Bridge:** Supports Automobilista 2/Project Cars 2 shared memory bridging (Native + Proton components).
@@ -63,7 +65,10 @@ $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/maste
 
 Potential Issues
 ----------------
-Some games require additional configuration to support SimHub.  Normally SimHub would configure this automatically for you but is unable to when running in it's own prefix.  Either look up instructions on how to manually configure the game, or follow [these directions](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) to install a demo copy in a game's prefix so it is able to auto-configure the game for you.
+* Some games require additional configuration to support SimHub.  Normally SimHub would configure this automatically for you but is unable to when running in it's own prefix.  Either look up instructions on how to manually configure the game, or follow [these directions](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) to install a demo copy in a game's prefix so it is able to auto-configure the game for you.
+* Simhub seemingly struggles to launch minimized if the game is already running in full screen.  Alt-tab until SimHub has launched.
+* If the game exits abnormally, you may have leftover .exe programs running in your prefixes that must be killed manually
+
 
 Usage in Steam
 --------------
@@ -81,7 +86,8 @@ Or if you installed it for all users:
 
 `  sim-launcher %command%   `
 
-### Script flags
+
+## Script flags
 
 You can append flags to the launcher to enable specific tools:
 
@@ -96,10 +102,11 @@ You can append flags to the launcher to enable specific tools:
 | --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
 | --simhub-pfx | Path to your Steam compatdata folder. |
 | --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
+| --simhub-same-prefix | Launch Simhub from the same prefix as the game, must already be installed |
 
 **Example setup:**
 
-`   ~/.local/bin/sim-launcher --opentrack --acbridge %command%   `
+`   ~/.local/bin/sim-launcher --lookpilot --simhub --acbridge %command%   `
 
 Configuration & Folders
 -----------------------

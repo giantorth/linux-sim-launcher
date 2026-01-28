@@ -82,6 +82,7 @@ parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
 parser.add_argument('--simhub-pfx', default=SIMHUB_DEFAULT_PFX, help='Path to Steam pfx for SimHub')
 parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
 parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')
+parser.add_argument('--simhub-same-prefix', action='store_true', help='Launch SimHub in the same prefix as the game')
 parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
 parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
@@ -161,11 +162,22 @@ def getopentrack():
     opentrackexec = join(LAUNCHERHOME, "install/opentrack.exe")
     return opentrackexec if isfile(opentrackexec) else None
 
-def getsimhub():
+def getsimhub(game_appid):
     if not args.simhub:
         return None
 
-    simhub_pfx_path = join(args.simhub_pfx, args.simhub_appid, "pfx/drive_c")
+    # Determine which AppID to use for SimHub
+    if args.simhub_same_prefix:
+        simhub_appid = game_appid
+        info(f"Using game's AppID for SimHub: {simhub_appid}")
+    else:
+        simhub_appid = args.simhub_appid
+
+    # Store the appid for later use
+    global SIMHUB_ACTUAL_APPID
+    SIMHUB_ACTUAL_APPID = simhub_appid
+
+    simhub_pfx_path = join(args.simhub_pfx, simhub_appid, "pfx/drive_c")
 
     possible_paths = [
         join(simhub_pfx_path, "program files/SimHub", args.simhub_exe),
@@ -178,7 +190,9 @@ def getsimhub():
             info(f"Found SimHub at: {path}")
             return path
 
-    error(f"Could not find SimHub executable for AppID {args.simhub_appid}")
+    error(f"Could not find SimHub executable for AppID {simhub_appid}")
+    info(f"Searched in prefix: {simhub_pfx_path}")
+    info(f"Searched paths: {possible_paths}")
     return None
 
 def towinepath(p):
@@ -192,7 +206,7 @@ def findappcmdline():
         if arg.endswith(".exe"): break
     return cmdline.strip()
 
-def getlaunchscript(appid, opentrackexec):
+def getlaunchscript(appid, opentrackexec, simhubexec):
     global PROTONBRIDGE
     scripts = join(LAUNCHERHOME, "scripts")
     if not isdir(scripts): makedirs(scripts, exist_ok=True)
@@ -210,6 +224,7 @@ def getlaunchscript(appid, opentrackexec):
     opentrackwine = towinepath(opentrackexec)
     acbridgewine = towinepath(ACSIMSHMBRIDGE)
     pc2bridgewine = towinepath(PC2SIMSHMBRIDGE)
+    simhubwine = towinepath(simhubexec) if simhubexec and args.simhub_same_prefix else None
 
     lines = []
 
@@ -221,6 +236,10 @@ def getlaunchscript(appid, opentrackexec):
 
     if opentrackexec:
         lines.append(f"start \"\" \"{opentrackwine}\"\r\n")
+
+    # Launch SimHub if it's in the same prefix
+    if simhubwine:
+        lines.append(f"start \"\" \"{simhubwine}\"\r\n")
 
     # 2. Launch Logic (Conditional on pc2bridge)
     if args.pc2bridge:
@@ -259,6 +278,10 @@ def getlaunchscript(appid, opentrackexec):
     if args.lookpilot:
         lines.append("taskkill /IM start.exe /F >nul 2>&1\r\n")
         lines.append("taskkill /IM TrackIR.exe /F >nul 2>&1\r\n")
+
+    # Kill SimHub if it was launched in the same prefix
+    if simhubwine:
+        lines.append(f"taskkill /IM {args.simhub_exe} /F >nul 2>&1\r\n")
 
     with open(script, mode="w") as f:
         f.writelines(lines)
@@ -344,9 +367,9 @@ if __name__ == '__main__':
 
     appid = findappid()
     opentrackexec = getopentrack()
-    simhubexec = getsimhub()
+    simhubexec = getsimhub(appid)
 
-    launcherscript = getlaunchscript(appid, opentrackexec)
+    launcherscript = getlaunchscript(appid, opentrackexec, simhubexec)
 
     lookpilot_proc = None
     if args.lookpilot:
@@ -378,10 +401,10 @@ if __name__ == '__main__':
     info(f"Final execution command: {' '.join(final_argv[1:])}")
     main_game_proc = Popen(final_argv[1:])
 
-    # 4. Launch SimHub and Proton Bridge
+    # 4. Launch SimHub and Proton Bridge (only if NOT in same prefix)
     bridge_proc = None
     simhub_proc = None
-    if args.simhub and simhubexec:
+    if args.simhub and simhubexec and not args.simhub_same_prefix:
         pt_launcher = which("protontricks-launch")
         if pt_launcher:
             clean_env = environ.copy()
@@ -397,18 +420,20 @@ if __name__ == '__main__':
                 os.link(PC2SIMSHMBRIDGE, PROTONBRIDGE)
 
             info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
-            # Store bridge_proc so we can track it properly
-            bridge_proc = Popen([pt_launcher, "--appid", str(args.simhub_appid), PROTONBRIDGE],
+            # Use the actual appid determined in getsimhub()
+            bridge_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), PROTONBRIDGE],
                 env=clean_env, start_new_session=True,
                 stdout=DEVNULL, stderr=DEVNULL)
 
             # Give bridge a moment to start
             time.sleep(1)
 
-            info(f"Launching SimHub: {args.simhub_exe}")
-            simhub_proc = Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
+            info(f"Launching SimHub: {args.simhub_exe} (AppID: {SIMHUB_ACTUAL_APPID})")
+            simhub_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), simhubexec],
                   env=clean_env, start_new_session=True,
                   stdout=DEVNULL, stderr=DEVNULL)
+    elif args.simhub and simhubexec and args.simhub_same_prefix:
+        info(f"SimHub will be launched from within game prefix via batch script")
 
     # 5. Launch Monocoque
     monocoque_proc = None
@@ -468,8 +493,8 @@ if __name__ == '__main__':
             else:
                 info(f"Monocoque already exited with code {monocoque_proc.returncode}")
 
-        # C. Kill SimHub and Bridge processes
-        if args.simhub:
+        # C. Kill SimHub and Bridge processes (only if launched externally)
+        if args.simhub and not args.simhub_same_prefix:
             info("Terminating SimHub...")
             kill_by_name("SimHubWPF.exe")
             
@@ -486,6 +511,8 @@ if __name__ == '__main__':
                     bridge_proc.wait()
                 except Exception as e:
                     error(f"Error terminating bridge: {e}")
+        elif args.simhub and args.simhub_same_prefix:
+            info("SimHub cleanup handled in game prefix")
 
         # D. Kill other Windows/Wine executables by name
         targets = [
