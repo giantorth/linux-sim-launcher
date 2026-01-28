@@ -80,6 +80,7 @@ parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
 parser.add_argument('--simhub-pfx', default=SIMHUB_DEFAULT_PFX, help='Path to Steam pfx for SimHub')
 parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
 parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')
+parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
 parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
 parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
@@ -336,6 +337,14 @@ if __name__ == '__main__':
             Popen([pt_launcher, "--appid", str(args.simhub_appid), simhubexec],
                   env=clean_env, start_new_session=False)
 
+    if args.monocoque:
+        info("Launching Monocoque")
+        monocoque_proc = Popen(["monocoque", "play"], 
+                            env=clean_env, 
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True)
+
     # --- THE CLEANUP LOGIC ---
     try:
         info("Waiting for main game to exit...")
@@ -369,6 +378,22 @@ if __name__ == '__main__':
         if args.simhub:
             info("Killing Proton Bridge for Simhub")
             bridge_proc.terminate()
+            bridge_proc.kill()
+
+        if args.monocoque:
+            info("Killing Monocoque")
+            if monocoque_proc and monocoque_proc.poll() is None:
+                try:
+                    # Send SIGTERM to the entire process group
+                    os.killpg(os.getpgid(monocoque_proc.pid), signal.SIGTERM)
+                    # Wait a bit for graceful shutdown
+                    monocoque_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't exit gracefully
+                    os.killpg(os.getpgid(monocoque_proc.pid), signal.SIGKILL)
+                    monocoque_proc.wait()
+                except ProcessLookupError:
+                    pass  # Process already dead
 
         # B. Kill all Windows/Wine executables by name
         # We use -9 (SIGKILL) to ensure they stop immediately
@@ -386,8 +411,8 @@ if __name__ == '__main__':
                 info(f"Terminating {exe}...")
                 # -f looks at the full command line argument (useful for Wine)
                 try:
-                    subprocess.run(["pkill", "-9", "-f", exe])#, stderr=subprocess.DEVNULL)
-                    info(f"Killed {exe}...")
+                    # subprocess.run(["pkill", "-9", "-f", exe])#, stderr=subprocess.DEVNULL)
+                    subprocess.run(["pkill", "-f", exe])#, stderr=subprocess.DEVNULL)
                 except:
                     info(f"Failed to kill {exe}")
  
