@@ -3,6 +3,8 @@ Linux Sim Launcher
 
 A Python-based utility to synchronize the launch and cleanup of Windows-based simulation tools (**Opentrack, SimHub, LookPilot**) alongside Steam games. It ensures these tools run in the correct Proton prefix and provides an **Assetto Corsa SHM Bridge** for shared memory support on Linux.  This solves the need to run SimHub in a single prefix to simplify licensing and configuration instead of installing it in every game prefix.
 
+You can find me on the [Sim Racing on Linux](https://simracingonlinux.com/) [discord](https://discord.simracingonlinux.com/) if you have any questions.
+
 Key Features
 ------------
 
@@ -53,7 +55,7 @@ $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/maste
 
     1. Add the SimHub installer to Steam as a **non-steam game** 
     2. Edit the properties to set compatability options to a GE-Proton (better dotnet compatability)
-    3. Run the SimHub installer and make sure to uncheck the usb display drivers and installing MS libraries
+    3. Run the SimHub installer and **make sure to uncheck** "Install Microsoft redistributables" and "Install USB display drivers" (they don't work on linux)
     4. Locate the appid for this new prefix (Tell steam to add it as a desktop shortcut and inspect the properties for the ID)
     5. Install dotnet48 in this prefix (Replace ID_OF_SIMHUB with correct value)
 

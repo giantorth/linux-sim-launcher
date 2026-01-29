@@ -154,6 +154,7 @@ def dlopentrack():
                 if err != 0:
                     panic("failed to extract 7z")
     updateversionfile(version)
+    return
 
 def getopentrack():
     if not args.opentrack:
@@ -514,23 +515,23 @@ if __name__ == '__main__':
         elif args.simhub and args.simhub_same_prefix:
             info("SimHub cleanup handled in game prefix")
 
+        # E. Kill LookPilot
+        if args.lookpilot:
+            info("Terminating LookPilot...")
+            kill_by_name("LookPilot")
+
         # D. Kill other Windows/Wine executables by name
         targets = [
             "acbridge.exe",
             "pcars2bridge.exe",
             "opentrack.exe",
             "TrackIR.exe",
+            Path(PROTONBRIDGE).name
         ]
 
         for exe in targets:
             if kill_by_name(exe):
                 info(f"Terminated {exe}")
-
-        # E. Kill LookPilot
-        if args.lookpilot:
-            info("Terminating LookPilot...")
-            kill_by_name("LookPilot")
-
         # F. Remove the hardlink
         if PROTONBRIDGE and os.path.exists(PROTONBRIDGE):
             try:
