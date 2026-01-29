@@ -98,6 +98,7 @@ You can append flags to the launcher to enable specific tools:
 |---|---|
 | --opentrack | Download (if needed) and launch Opentrack. |
 | --simhub | Launch SimHub from its own Proton prefix. |
+| --monocoque | Launch Monocoque. |
 | --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
 | --pc2bridge | Launch the Project Cars 2 (Automobilista 2) Shared Memory Bridge. |
 | --lookpilot | Launch LookPilot via Steam. | 
