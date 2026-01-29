@@ -53,15 +53,16 @@ $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/maste
 
     1. Add the SimHub installer to Steam as a **non-steam game** 
     2. Edit the properties to set compatability options to a GE-Proton (better dotnet compatability)
-    2. Locate the appid for this new prefix (Tell steam to add it as a desktop shortcut and inspect the properties for the ID)
-    3. Install dotnet48 in this prefix (Replace ID_OF_SIMHUB with correct value)
+    3. Run the SimHub installer and make sure to uncheck the usb display drivers and installing MS libraries
+    4. Locate the appid for this new prefix (Tell steam to add it as a desktop shortcut and inspect the properties for the ID)
+    5. Install dotnet48 in this prefix (Replace ID_OF_SIMHUB with correct value)
 
     ```bash
     $ WINEPREFIX=~/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx winetricks -q --force dotnet48
     ```
-    4. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
-    5. Ensure SimHub launches correctly from Steam
-    6. Edit the script parser arguments to add your unique SimHub appid as the default (if desired)
+    6. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
+    7. Ensure SimHub launches correctly from Steam
+    8. Edit the script parser arguments to add your unique SimHub appid as the default (if desired)
 
 Potential Issues
 ----------------
