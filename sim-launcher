@@ -16,6 +16,7 @@ import signal
 import os
 import subprocess
 import time
+import requests
 
 # --- Logging Setup ---
 def setup_logging(debug_enabled):
@@ -67,13 +68,44 @@ LAUNCHERHOME = join(APPHOME, ".local/share/sim-launcher")
 OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
 SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
 SIMHUB_DEFAULT_PFX = expanduser("~/.local/share/Steam/steamapps/compatdata")
-SIMSHM = join( APPHOME, "git/simshmbridge/assets/" )
-ACSIMSHM = join( APPHOME, "git/simshmbridge/assets/acshm" )
-ACSIMSHMBRIDGE = join( APPHOME, "git/simshmbridge/assets/acbridge.exe" )
-PC2SIMSHM = join( APPHOME, "git/simshmbridge/assets/pcars2shm" )
-PC2SIMSHMBRIDGE = join( APPHOME, "git/simshmbridge/assets/pcars2bridge.exe" )
+SIMSHM = join( APPHOME, "src/simshmbridge/assets/" )
+ACSIMSHM = join( APPHOME, "src/simshmbridge/assets/acshm" )
+ACSIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/acbridge.exe" )
+PC2SIMSHM = join( APPHOME, "src/simshmbridge/assets/pcars2shm" )
+PC2SIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/pcars2bridge.exe" )
 PROTONBRIDGE = ""
 ZIPBINARY = ""
+KIOSK_PORT = "2323"          # Default Fully Kiosk port
+
+def send_kiosk_command(cmd):
+    url = f"http://{args.kiosk_ip}:{KIOSK_PORT}/"
+    params = {
+        "cmd": cmd,
+        "password": args.kiosk_pw,
+        "type": "json" 
+    }
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        if response.text:
+            try:
+                return response.json()
+            except json.JSONDecodeError:
+                info(f"Kiosk response (non-JSON): {response.text}")
+                return {"status": "ok", "response": response.text}
+        else:
+            return {"status": "ok"}
+    except requests.exceptions.RequestException as e:
+        error(f"Kiosk command failed: {e}")
+        return None
+
+def screen_on():
+    #Turn screen on
+    return send_kiosk_command("screenOn")
+
+def screen_off():
+    #Turn screen off
+    return send_kiosk_command("screenOff")
+
 
 # Command line arguments
 parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
@@ -87,6 +119,8 @@ parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
 parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
 parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
+parser.add_argument('--kiosk-ip', dest='kiosk_ip', default="192.168.1.100", help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
+parser.add_argument('--kiosk-pw', dest='kiosk_pw', help="Set the admin password of a Fully Kiosk Browser for automatic sleep/wake")
 parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
 args, unknown_args = parser.parse_known_args()
 
@@ -219,7 +253,13 @@ def getlaunchscript(appid, opentrackexec, simhubexec):
     appargs = appcmdline[appsplitindex:]
     app_exe_name = Path(appexec).name
 
-    PROTONBRIDGE = join( SIMSHM, Path(appexec).name )
+    # Use acs.exe as the bridge name for Assetto Corsa (AppID 244210)
+    if appid == "244210":
+        bridge_name = "acs.exe"
+    else:
+        bridge_name = Path(appexec).name
+
+    PROTONBRIDGE = join( SIMSHM, bridge_name )
 
     appwine = towinepath(appexec)
     opentrackwine = towinepath(opentrackexec)
@@ -436,6 +476,11 @@ if __name__ == '__main__':
     elif args.simhub and simhubexec and args.simhub_same_prefix:
         info(f"SimHub will be launched from within game prefix via batch script")
 
+    # Turn on Kiosk Browser
+    if args.kiosk_ip and args.kiosk_pw:
+        info("Turning on kiosk tablet screen")
+        screen_on()
+
     # 5. Launch Monocoque
     monocoque_proc = None
     if args.monocoque:
@@ -467,6 +512,10 @@ if __name__ == '__main__':
     finally:
         info("Main game closed. Initiating global cleanup...")
 
+        # Turn off Kiosk Browser
+        if args.kiosk_ip and args.kiosk_pw:
+            screen_off()
+
         # A. Kill Native Linux Bridge Groups
         if ac_shm_proc:
             info("Terminating AC Bridge...")
@@ -475,7 +524,7 @@ if __name__ == '__main__':
             # Clean up shm files
             info("Cleaning up AC shm files")
             for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics", 
-                           "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static"]:
+                           "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static", "/dev/shm/acpmf_simhub_v2"]:
                 try:
                     if os.path.exists(shm_file):
                         os.remove(shm_file)
