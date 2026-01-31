@@ -45,14 +45,23 @@ def setup_logging(debug_enabled):
 log = None
 
 def panic(msg):
-    log.critical(msg)
+    if log:
+        log.critical(msg)
+    else:
+        print(f"[sim-launcher] CRITICAL: {msg}", file=stdout)
     exit(-1)
 
 def error(msg):
-    log.error(msg)
+    if log:
+        log.error(msg)
+    else:
+        print(f"[sim-launcher] ERROR: {msg}", file=stdout)
 
 def info(msg):
-    log.info(msg)
+    if log:
+        log.info(msg)
+    else:
+        print(f"[sim-launcher] INFO: {msg}", file=stdout)
 
 def getenv(name, default=None):
     try:
@@ -73,6 +82,7 @@ ACSIMSHM = join( APPHOME, "src/simshmbridge/assets/acshm" )
 ACSIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/acbridge.exe" )
 PC2SIMSHM = join( APPHOME, "src/simshmbridge/assets/pcars2shm" )
 PC2SIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/pcars2bridge.exe" )
+DUMMYBRIDGE = join( APPHOME, "src/simshmbridge/assets/dummy.exe" )
 PROTONBRIDGE = ""
 ZIPBINARY = ""
 KIOSK_PORT = "2323"          # Default Fully Kiosk port
@@ -82,20 +92,37 @@ def send_kiosk_command(cmd):
     params = {
         "cmd": cmd,
         "password": args.kiosk_pw,
-        "type": "json" 
+        "type": "json"
     }
     try:
+        info(f"Sending kiosk command: {cmd}")
         response = requests.get(url, params=params, timeout=5)
+        response.raise_for_status()  # Raise exception for bad status codes
+
         if response.text:
             try:
-                return response.json()
+                result = response.json()
+                info(f"Kiosk command '{cmd}' successful")
+                return result
             except json.JSONDecodeError:
                 info(f"Kiosk response (non-JSON): {response.text}")
                 return {"status": "ok", "response": response.text}
         else:
             return {"status": "ok"}
+    except requests.exceptions.Timeout as e:
+        error(f"Kiosk command '{cmd}' timed out: {e}")
+        return None
+    except requests.exceptions.ConnectionError as e:
+        error(f"Could not connect to kiosk at {url}: {e}")
+        return None
+    except requests.exceptions.HTTPError as e:
+        error(f"Kiosk HTTP error for command '{cmd}': {e}")
+        return None
     except requests.exceptions.RequestException as e:
-        error(f"Kiosk command failed: {e}")
+        error(f"Kiosk command '{cmd}' failed: {e}")
+        return None
+    except Exception as e:
+        error(f"Unexpected error sending kiosk command '{cmd}': {e}")
         return None
 
 def screen_on():
@@ -105,7 +132,6 @@ def screen_on():
 def screen_off():
     #Turn screen off
     return send_kiosk_command("screenOff")
-
 
 # Command line arguments
 parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
@@ -119,7 +145,7 @@ parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
 parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
 parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
-parser.add_argument('--kiosk-ip', dest='kiosk_ip', default="192.168.1.100", help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
+parser.add_argument('--kiosk-ip', dest='kiosk_ip', help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
 parser.add_argument('--kiosk-pw', dest='kiosk_pw', help="Set the admin password of a Fully Kiosk Browser for automatic sleep/wake")
 parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
 args, unknown_args = parser.parse_known_args()
@@ -136,99 +162,193 @@ def findappid():
     for arg in argv_original:
         if APPIDSIG in arg:
             appid = arg[len(APPIDSIG):]
+            break
+
     if appid == "":
-        error("appid not found, falling back to executable name")
-        appid = argv_original[-1]
-        if not appid.endswith(".exe"):
-            panic("could not find a valid Windows executable name")
-    info("launching app with id " + str(appid) + "...")
+        error("appid not found in arguments, falling back to executable name")
+        if len(argv_original) > 0:
+            appid = argv_original[-1]
+            if not appid.endswith(".exe"):
+                panic(f"Could not find a valid Windows executable name. Last arg: {appid}")
+        else:
+            panic("No command line arguments provided")
+    else:
+        info(f"Found AppID: {appid}")
+
+    info(f"Launching app with id {appid}...")
     return appid
 
 def isnewer(ver):
     versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
-    if not isfile(versionfile):
-        with open(versionfile, mode="w") as f:
-            f.write(ver)
+    try:
+        if not isfile(versionfile):
+            with open(versionfile, mode="w") as f:
+                f.write(ver)
+            return True
+        with open(versionfile, mode="r") as f:
+            fver = f.read().strip()
+            return fver != ver
+    except IOError as e:
+        error(f"Error reading/writing version file {versionfile}: {e}")
+        return True  # Assume it's newer to trigger update
+    except Exception as e:
+        error(f"Unexpected error checking version: {e}")
         return True
-    with open(versionfile, mode="r+") as f:
-        fver = f.read()
-        return fver != ver
 
 def updateversionfile(ver):
     versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
-    with open(versionfile, mode="w") as f:
-        f.write(ver)
+    try:
+        with open(versionfile, mode="w") as f:
+            f.write(ver)
+    except IOError as e:
+        error(f"Failed to update version file {versionfile}: {e}")
+    except Exception as e:
+        error(f"Unexpected error updating version file: {e}")
 
 def removeversionfile():
     versionfile = join(LAUNCHERHOME, "opentrack-version.txt")
-    if isfile(versionfile):
-        remove(versionfile)
+    try:
+        if isfile(versionfile):
+            remove(versionfile)
+            info(f"Removed version file: {versionfile}")
+    except PermissionError as e:
+        error(f"Permission denied removing version file {versionfile}: {e}")
+    except Exception as e:
+        error(f"Failed to remove version file {versionfile}: {e}")
 
 def dlopentrack():
     info("checking if opentrack is up to date...")
     try:
         content = urlopen(OPENTRACKURL).read().decode("UTF-8")
         latest = json.loads(content)
+    except URLError as e:
+        error(f"Network error fetching opentrack release manifest: {e}")
+        return
+    except json.JSONDecodeError as e:
+        error(f"Failed to parse opentrack release manifest: {e}")
+        return
     except Exception as e:
-        error("could not get opentrack release manifest: " + str(e))
+        error(f"Unexpected error getting opentrack release manifest: {e}")
         return
 
-    version = latest["tag_name"].split("-")[1]
+    try:
+        version = latest["tag_name"].split("-")[1]
+    except (KeyError, IndexError) as e:
+        error(f"Invalid opentrack release manifest format: {e}")
+        return
+
     if isnewer(version):
-        info("downloading the latest opentrack version...")
-        for asset in latest["assets"]:
-            if asset["name"].endswith("portable.7z"):
-                opentrackark = join(LAUNCHERHOME, "opentrack.7z")
-                urlretrieve(asset["browser_download_url"], opentrackark)
-                opentrackinstall = join(LAUNCHERHOME, "install")
-                if isdir(opentrackinstall):
-                    rmtree(opentrackinstall)
-                err = Popen([which(ZIPBINARY), "x", "-aoa", "-o" + LAUNCHERHOME, opentrackark], cwd=LAUNCHERHOME).wait()
-                remove(opentrackark)
-                if err != 0:
-                    panic("failed to extract 7z")
+        info(f"Downloading the latest opentrack version: {version}")
+        try:
+            for asset in latest["assets"]:
+                if asset["name"].endswith("portable.7z"):
+                    opentrackark = join(LAUNCHERHOME, "opentrack.7z")
+                    info(f"Downloading from: {asset['browser_download_url']}")
+                    urlretrieve(asset["browser_download_url"], opentrackark)
+
+                    opentrackinstall = join(LAUNCHERHOME, "install")
+                    if isdir(opentrackinstall):
+                        info("Removing old opentrack installation")
+                        rmtree(opentrackinstall)
+
+                    info("Extracting opentrack archive...")
+                    err = Popen([which(ZIPBINARY), "x", "-aoa", "-o" + LAUNCHERHOME, opentrackark],
+                               cwd=LAUNCHERHOME).wait()
+
+                    if isfile(opentrackark):
+                        remove(opentrackark)
+
+                    if err != 0:
+                        error(f"Failed to extract opentrack archive (exit code: {err})")
+                        removeversionfile()  # Force re-download next time
+                        return
+
+                    info("OpenTrack installation complete")
+                    break
+            else:
+                error("No portable.7z asset found in opentrack release")
+                return
+        except URLError as e:
+            error(f"Failed to download opentrack: {e}")
+            removeversionfile()
+            return
+        except IOError as e:
+            error(f"File I/O error during opentrack installation: {e}")
+            removeversionfile()
+            return
+        except Exception as e:
+            error(f"Unexpected error installing opentrack: {e}")
+            removeversionfile()
+            return
+    else:
+        info(f"OpenTrack is up to date (version: {version})")
+
     updateversionfile(version)
     return
 
 def getopentrack():
     if not args.opentrack:
         return None
-    dlopentrack()
+
+    try:
+        dlopentrack()
+    except Exception as e:
+        error(f"Error setting up opentrack: {e}")
+        return None
+
     opentrackexec = join(LAUNCHERHOME, "install/opentrack.exe")
-    return opentrackexec if isfile(opentrackexec) else None
+    if isfile(opentrackexec):
+        info(f"OpenTrack executable found: {opentrackexec}")
+        return opentrackexec
+    else:
+        error(f"OpenTrack executable not found at: {opentrackexec}")
+        return None
 
 def getsimhub(game_appid):
     if not args.simhub:
         return None
 
-    # Determine which AppID to use for SimHub
-    if args.simhub_same_prefix:
-        simhub_appid = game_appid
-        info(f"Using game's AppID for SimHub: {simhub_appid}")
-    else:
-        simhub_appid = args.simhub_appid
+    try:
+        # Determine which AppID to use for SimHub
+        if args.simhub_same_prefix:
+            simhub_appid = game_appid
+            info(f"Using game's AppID for SimHub: {simhub_appid}")
+        else:
+            simhub_appid = args.simhub_appid
 
-    # Store the appid for later use
-    global SIMHUB_ACTUAL_APPID
-    SIMHUB_ACTUAL_APPID = simhub_appid
+        # Store the appid for later use
+        global SIMHUB_ACTUAL_APPID
+        SIMHUB_ACTUAL_APPID = simhub_appid
 
-    simhub_pfx_path = join(args.simhub_pfx, simhub_appid, "pfx/drive_c")
+        simhub_pfx_path = join(args.simhub_pfx, simhub_appid, "pfx/drive_c")
 
-    possible_paths = [
-        join(simhub_pfx_path, "program files/SimHub", args.simhub_exe),
-        join(simhub_pfx_path, "Program Files (x86)/SimHub", args.simhub_exe),
-        join(simhub_pfx_path, "users/steamuser/Desktop/SimHub", args.simhub_exe),
-    ]
+        # Check if prefix path exists
+        if not isdir(simhub_pfx_path):
+            error(f"SimHub prefix path does not exist: {simhub_pfx_path}")
+            error(f"Please ensure the prefix for AppID {simhub_appid} is valid")
+            return None
 
-    for path in possible_paths:
-        if isfile(path):
-            info(f"Found SimHub at: {path}")
-            return path
+        possible_paths = [
+            join(simhub_pfx_path, "program files/SimHub", args.simhub_exe),
+            join(simhub_pfx_path, "Program Files (x86)/SimHub", args.simhub_exe),
+            join(simhub_pfx_path, "users/steamuser/Desktop/SimHub", args.simhub_exe),
+        ]
 
-    error(f"Could not find SimHub executable for AppID {simhub_appid}")
-    info(f"Searched in prefix: {simhub_pfx_path}")
-    info(f"Searched paths: {possible_paths}")
-    return None
+        for path in possible_paths:
+            if isfile(path):
+                info(f"Found SimHub at: {path}")
+                return path
+
+        error(f"Could not find SimHub executable for AppID {simhub_appid}")
+        info(f"Searched in prefix: {simhub_pfx_path}")
+        for i, path in enumerate(possible_paths, 1):
+            info(f"  {i}. {path}")
+        info("Please verify SimHub is installed in one of these locations")
+        return None
+
+    except Exception as e:
+        error(f"Error locating SimHub: {e}")
+        return None
 
 def towinepath(p):
     if p is None: return ""
@@ -236,26 +356,46 @@ def towinepath(p):
 
 def findappcmdline():
     cmdline = ""
+    exe_found = False
     for arg in reversed(argv_original):
         cmdline = arg + " " + cmdline
-        if arg.endswith(".exe"): break
-    return cmdline.strip()
+        if arg.endswith(".exe"):
+            exe_found = True
+            break
+
+    if not exe_found:
+        error("Warning: No .exe found in command line")
+
+    result = cmdline.strip()
+    info(f"App command line: {result}")
+    return result
 
 def getlaunchscript(appid, opentrackexec, simhubexec):
     global PROTONBRIDGE
     scripts = join(LAUNCHERHOME, "scripts")
-    if not isdir(scripts): makedirs(scripts, exist_ok=True)
+    try:
+        if not isdir(scripts):
+            makedirs(scripts, exist_ok=True)
+    except Exception as e:
+        panic(f"Failed to create scripts directory {scripts}: {e}")
     script = join(scripts, appid + ".bat")
 
     appcmdline = findappcmdline()
-    appsplitindex = appcmdline.index(".exe") + len(".exe")
-    appexec = appcmdline[:appsplitindex]
-    appargs = appcmdline[appsplitindex:]
-    app_exe_name = Path(appexec).name
+    try:
+        appsplitindex = appcmdline.index(".exe") + len(".exe")
+        appexec = appcmdline[:appsplitindex]
+        appargs = appcmdline[appsplitindex:]
+        app_exe_name = Path(appexec).name
+    except ValueError:
+        panic(f"Could not parse .exe from command line: {appcmdline}")
+    except Exception as e:
+        panic(f"Error parsing command line: {e}")
 
-    # Use acs.exe as the bridge name for Assetto Corsa (AppID 244210)
+    # Proton bridge fixes for specific games with launchers
     if appid == "244210":
         bridge_name = "acs.exe"
+    elif app_exe_name == "RSF_Launcher.exe":
+        bridge_name = "RichardBurnsRally_SSE.exe"
     else:
         bridge_name = Path(appexec).name
 
@@ -324,18 +464,87 @@ def getlaunchscript(appid, opentrackexec, simhubexec):
     if simhubwine:
         lines.append(f"taskkill /IM {args.simhub_exe} /F >nul 2>&1\r\n")
 
-    with open(script, mode="w") as f:
-        f.writelines(lines)
+    try:
+        with open(script, mode="w") as f:
+            f.writelines(lines)
+        info(f"Created launch script: {script}")
+    except IOError as e:
+        panic(f"Failed to write launch script {script}: {e}")
+    except Exception as e:
+        panic(f"Unexpected error creating launch script: {e}")
     return script
 
 def makehome():
-    if not isdir(LAUNCHERHOME):
-        makedirs(LAUNCHERHOME, exist_ok=True)
+    try:
+        if not isdir(LAUNCHERHOME):
+            makedirs(LAUNCHERHOME, exist_ok=True)
+            info(f"Created launcher home directory: {LAUNCHERHOME}")
+    except PermissionError as e:
+        panic(f"Permission denied creating launcher home directory {LAUNCHERHOME}: {e}")
+    except Exception as e:
+        panic(f"Failed to create launcher home directory {LAUNCHERHOME}: {e}")
 
 def check7z():
     global ZIPBINARY
     ZIPBINARY = which("7z") or which("7za")
-    if not ZIPBINARY: panic("7z is not installed")
+    if not ZIPBINARY:
+        panic("7z is not installed. Please install p7zip or p7zip-full package")
+    info(f"Found 7z binary: {ZIPBINARY}")
+
+def validate_paths():
+    """Validate critical paths and executables based on enabled features"""
+    issues = []
+
+    # Check bridge executables if requested
+    if args.acbridge:
+        if not isfile(ACSIMSHM):
+            issues.append(f"AC Bridge executable not found: {ACSIMSHM}")
+        if not isfile(ACSIMSHMBRIDGE):
+            issues.append(f"AC SimHub Bridge executable not found: {ACSIMSHMBRIDGE}")
+
+    if args.pc2bridge:
+        if not isfile(PC2SIMSHM):
+            issues.append(f"PC2 Bridge executable not found: {PC2SIMSHM}")
+        if not isfile(PC2SIMSHMBRIDGE):
+            issues.append(f"PC2 SimHub Bridge executable not found: {PC2SIMSHMBRIDGE}")
+
+    # Check for protontricks if using SimHub in separate prefix
+    if args.simhub and not args.simhub_same_prefix:
+        if not which("protontricks-launch"):
+            issues.append("protontricks-launch not found - required for SimHub in separate prefix")
+
+    # Check SimHub prefix path
+    if args.simhub and not args.simhub_same_prefix:
+        if not isdir(args.simhub_pfx):
+            issues.append(f"SimHub prefix directory not found: {args.simhub_pfx}")
+
+    # Check for steam command if using LookPilot
+    if args.lookpilot:
+        if not which("steam"):
+            issues.append("steam command not found - required for LookPilot")
+
+    # Check for monocoque if requested
+    if args.monocoque:
+        if not which("monocoque"):
+            issues.append("monocoque command not found")
+
+    # Check kiosk configuration
+    if args.kiosk_ip and not args.kiosk_pw:
+        issues.append("--kiosk-ip specified but --kiosk-pw not provided")
+    if args.kiosk_pw and not args.kiosk_ip:
+        issues.append("--kiosk-pw specified but --kiosk-ip not provided")
+
+    # Report issues
+    if issues:
+        error("Validation issues found:")
+        for issue in issues:
+            error(f"  - {issue}")
+        if any("not found" in issue.lower() for issue in issues):
+            info("Some features may not work correctly. Continuing anyway...")
+    else:
+        info("Path validation passed")
+
+    return len(issues) == 0
 
 def kill_process_tree(pid, timeout=5):
     """
@@ -403,191 +612,347 @@ def kill_by_name(name, force=False):
         return False
 
 if __name__ == '__main__':
-    check7z()
-    makehome()
-
-    appid = findappid()
-    opentrackexec = getopentrack()
-    simhubexec = getsimhub(appid)
-
-    launcherscript = getlaunchscript(appid, opentrackexec, simhubexec)
-
-    lookpilot_proc = None
-    if args.lookpilot:
-        info("Launching LookPilot...")
-        lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
-
-    # 1. Start ACSIMSHM (Native Linux) in its own process group
-    ac_shm_proc = None
-    if args.acbridge:
-        info("Launching AC Bridge (Native)")
-        # Use start_new_session instead of setpgrp for better process isolation
-        ac_shm_proc = Popen(ACSIMSHM, start_new_session=True, 
-                           stdout=DEVNULL, stderr=DEVNULL)
-
-    # 2. Start PC2SIMSHM (Native Linux) in its own process group
-    pc2_shm_proc = None
-    if args.pc2bridge:
-        info("Launching PC2 Bridge (Native)")
-        pc2_shm_proc = Popen(PC2SIMSHM, start_new_session=True,
-                            stdout=DEVNULL, stderr=DEVNULL)
-
-    # 3. Prepare and launch the main game
-    final_argv = list(argv_original)
-    for i in range(len(final_argv) - 1, -1, -1):
-        if final_argv[i].endswith(".exe"):
-            final_argv[i] = launcherscript
-            break
-
-    info(f"Final execution command: {' '.join(final_argv[1:])}")
-    main_game_proc = Popen(final_argv[1:])
-
-    # 4. Launch SimHub and Proton Bridge (only if NOT in same prefix)
-    bridge_proc = None
-    simhub_proc = None
-    if args.simhub and simhubexec and not args.simhub_same_prefix:
-        pt_launcher = which("protontricks-launch")
-        if pt_launcher:
-            clean_env = environ.copy()
-            for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
-                clean_env.pop(var, None)
-
-            if os.path.exists(PROTONBRIDGE):
-                os.remove(PROTONBRIDGE)
-
-            if args.acbridge:
-                os.link(ACSIMSHMBRIDGE, PROTONBRIDGE)
-            else:
-                os.link(PC2SIMSHMBRIDGE, PROTONBRIDGE)
-
-            info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
-            # Use the actual appid determined in getsimhub()
-            bridge_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), PROTONBRIDGE],
-                env=clean_env, start_new_session=True,
-                stdout=DEVNULL, stderr=DEVNULL)
-
-            # Give bridge a moment to start
-            time.sleep(1)
-
-            info(f"Launching SimHub: {args.simhub_exe} (AppID: {SIMHUB_ACTUAL_APPID})")
-            simhub_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), simhubexec],
-                  env=clean_env, start_new_session=True,
-                  stdout=DEVNULL, stderr=DEVNULL)
-    elif args.simhub and simhubexec and args.simhub_same_prefix:
-        info(f"SimHub will be launched from within game prefix via batch script")
-
-    # Turn on Kiosk Browser
-    if args.kiosk_ip and args.kiosk_pw:
-        info("Turning on kiosk tablet screen")
-        screen_on()
-
-    # 5. Launch Monocoque
-    monocoque_proc = None
-    if args.monocoque:
-        info("Launching Monocoque")
-        
-        monocoque_proc = Popen(["monocoque", "play"], 
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                text=True,
-                                bufsize=1)
-
-        # Give it a moment to start properly
-        time.sleep(0.5)
-        # monocoque_proc.stdin.close()
-
-        # Check if it started successfully
-        if monocoque_proc.poll() is not None:
-            error(f"Monocoque exited immediately with code {monocoque_proc.returncode}")
-        else:
-            info(f"Monocoque started successfully (PID: {monocoque_proc.pid})")
-
-    # --- THE CLEANUP LOGIC ---
     try:
-        info("Waiting for main game to exit...")
-        main_game_proc.wait()
-    except KeyboardInterrupt:
-        info("Shutdown requested via keyboard...")
-    finally:
-        info("Main game closed. Initiating global cleanup...")
+        check7z()
+        makehome()
+        validate_paths()
 
-        # Turn off Kiosk Browser
-        if args.kiosk_ip and args.kiosk_pw:
-            screen_off()
+        appid = findappid()
+        opentrackexec = getopentrack()
+        simhubexec = getsimhub(appid)
 
-        # A. Kill Native Linux Bridge Groups
-        if ac_shm_proc:
-            info("Terminating AC Bridge...")
-            kill_process_tree(ac_shm_proc.pid)
-            
-            # Clean up shm files
-            info("Cleaning up AC shm files")
-            for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics", 
-                           "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static", "/dev/shm/acpmf_simhub_v2"]:
-                try:
-                    if os.path.exists(shm_file):
-                        os.remove(shm_file)
-                except Exception as e:
-                    error(f"Failed to remove {shm_file}: {e}")
-         
-        if pc2_shm_proc:
-            info("Terminating PC2 Bridge...")
-            kill_process_tree(pc2_shm_proc.pid)
+        launcherscript = getlaunchscript(appid, opentrackexec, simhubexec)
 
-        # B. Kill Monocoque
-        if monocoque_proc:
-            info("Terminating Monocoque...")
-            if monocoque_proc.poll() is None:  # Still running
-                monocoque_proc.kill()
-            else:
-                info(f"Monocoque already exited with code {monocoque_proc.returncode}")
-
-        # C. Kill SimHub and Bridge processes (only if launched externally)
-        if args.simhub and not args.simhub_same_prefix:
-            info("Terminating SimHub...")
-            kill_by_name("SimHubWPF.exe")
-            
-            # FIX: Kill bridge by PID first if we have it, then by name as backup
-            if bridge_proc and bridge_proc.poll() is None:
-                info(f"Terminating Proton Bridge (PID: {bridge_proc.pid})...")
-                try:
-                    bridge_proc.terminate()
-                    bridge_proc.wait(timeout=3)
-                    info("Bridge terminate successful")
-                except subprocess.TimeoutExpired:
-                    info("Bridge didn't exit, force killing...")
-                    bridge_proc.kill()
-                    bridge_proc.wait()
-                except Exception as e:
-                    error(f"Error terminating bridge: {e}")
-        elif args.simhub and args.simhub_same_prefix:
-            info("SimHub cleanup handled in game prefix")
-
-        # E. Kill LookPilot
+        lookpilot_proc = None
         if args.lookpilot:
-            info("Terminating LookPilot...")
-            kill_by_name("LookPilot")
-
-        # D. Kill other Windows/Wine executables by name
-        targets = [
-            "acbridge.exe",
-            "pcars2bridge.exe",
-            "opentrack.exe",
-            "TrackIR.exe",
-            Path(PROTONBRIDGE).name
-        ]
-
-        for exe in targets:
-            if kill_by_name(exe):
-                info(f"Terminated {exe}")
-        # F. Remove the hardlink
-        if PROTONBRIDGE and os.path.exists(PROTONBRIDGE):
+            info("Launching LookPilot...")
             try:
-                info(f"Cleaning up {PROTONBRIDGE}")
-                os.remove(PROTONBRIDGE)
-                info("Cleaned up bridge link.")
+                lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
+                info(f"LookPilot launched (PID: {lookpilot_proc.pid})")
+            except FileNotFoundError:
+                error("Failed to launch LookPilot: steam command not found")
             except Exception as e:
-                error(f"Failed to clean up {PROTONBRIDGE}: {e}")
+                error(f"Failed to launch LookPilot: {e}")
 
-    info("Cleanup complete. Exiting.")
+        # 1. Start ACSIMSHM (Native Linux) in its own process group
+        ac_shm_proc = None
+        if args.acbridge:
+            info("Launching AC Bridge (Native)")
+            if not isfile(ACSIMSHM):
+                error(f"AC Bridge executable not found: {ACSIMSHM}")
+            else:
+                try:
+                    ac_shm_proc = Popen(ACSIMSHM, start_new_session=True,
+                                       stdout=DEVNULL, stderr=DEVNULL)
+                    info(f"AC Bridge launched (PID: {ac_shm_proc.pid})")
+                    # Quick check if it started successfully
+                    time.sleep(0.2)
+                    if ac_shm_proc.poll() is not None:
+                        error(f"AC Bridge exited immediately with code {ac_shm_proc.returncode}")
+                        ac_shm_proc = None
+                except PermissionError:
+                    error(f"Permission denied launching AC Bridge: {ACSIMSHM}")
+                except Exception as e:
+                    error(f"Failed to launch AC Bridge: {e}")
+
+        # 2. Start PC2SIMSHM (Native Linux) in its own process group
+        pc2_shm_proc = None
+        if args.pc2bridge:
+            info("Launching PC2 Bridge (Native)")
+            if not isfile(PC2SIMSHM):
+                error(f"PC2 Bridge executable not found: {PC2SIMSHM}")
+            else:
+                try:
+                    pc2_shm_proc = Popen(PC2SIMSHM, start_new_session=True,
+                                        stdout=DEVNULL, stderr=DEVNULL)
+                    info(f"PC2 Bridge launched (PID: {pc2_shm_proc.pid})")
+                    # Quick check if it started successfully
+                    time.sleep(0.2)
+                    if pc2_shm_proc.poll() is not None:
+                        error(f"PC2 Bridge exited immediately with code {pc2_shm_proc.returncode}")
+                        pc2_shm_proc = None
+                except PermissionError:
+                    error(f"Permission denied launching PC2 Bridge: {PC2SIMSHM}")
+                except Exception as e:
+                    error(f"Failed to launch PC2 Bridge: {e}")
+
+        # 3. Prepare and launch the main game
+        final_argv = list(argv_original)
+        exe_found = False
+        for i in range(len(final_argv) - 1, -1, -1):
+            if final_argv[i].endswith(".exe"):
+                final_argv[i] = launcherscript
+                exe_found = True
+                break
+
+        if not exe_found:
+            panic("Could not find executable in command line arguments")
+
+        info(f"Final execution command: {' '.join(final_argv[1:])}")
+        try:
+            main_game_proc = Popen(final_argv[1:])
+            info(f"Main game launched (PID: {main_game_proc.pid})")
+        except FileNotFoundError as e:
+            panic(f"Failed to launch game - command not found: {e}")
+        except Exception as e:
+            panic(f"Failed to launch main game: {e}")
+
+        # 4. Launch SimHub and Proton Bridge (only if NOT in same prefix)
+        bridge_proc = None
+        simhub_proc = None
+        if args.simhub and simhubexec and not args.simhub_same_prefix:
+            pt_launcher = which("protontricks-launch")
+            if not pt_launcher:
+                error("protontricks-launch not found - cannot launch SimHub in separate prefix")
+            else:
+                try:
+                    clean_env = environ.copy()
+                    for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
+                        clean_env.pop(var, None)
+
+                    # Create hardlink for bridge
+                    if os.path.exists(PROTONBRIDGE):
+                        os.remove(PROTONBRIDGE)
+
+                    bridge_source = ACSIMSHMBRIDGE if args.acbridge else (PC2SIMSHMBRIDGE if args.pc2bridge else DUMMYBRIDGE)
+                    if not isfile(bridge_source):
+                        error(f"Bridge source not found: {bridge_source}")
+                    else:
+                        try:
+                            os.link(bridge_source, PROTONBRIDGE)
+                            info(f"Created bridge link: {PROTONBRIDGE}")
+                        except OSError as e:
+                            error(f"Failed to create bridge hardlink: {e}")
+                            # Try to continue without bridge
+                            PROTONBRIDGE = ""
+
+                    if PROTONBRIDGE:
+                        info(f"Launching Proton Bridge for SimHub: {PROTONBRIDGE}")
+                        try:
+                            bridge_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), PROTONBRIDGE],
+                                env=clean_env, start_new_session=True,
+                                stdout=DEVNULL, stderr=DEVNULL)
+                            info(f"Bridge launched (PID: {bridge_proc.pid})")
+                            time.sleep(1)  # Give bridge a moment to start
+                        except Exception as e:
+                            error(f"Failed to launch Proton Bridge: {e}")
+                            bridge_proc = None
+
+                    info(f"Launching SimHub: {args.simhub_exe} (AppID: {SIMHUB_ACTUAL_APPID})")
+                    try:
+                        simhub_proc = Popen([pt_launcher, "--appid", str(SIMHUB_ACTUAL_APPID), simhubexec],
+                              env=clean_env, start_new_session=True,
+                              stdout=DEVNULL, stderr=DEVNULL)
+                        info(f"SimHub launched (PID: {simhub_proc.pid})")
+                    except Exception as e:
+                        error(f"Failed to launch SimHub: {e}")
+                        simhub_proc = None
+
+                except Exception as e:
+                    error(f"Error setting up SimHub/Bridge: {e}")
+
+        elif args.simhub and simhubexec and args.simhub_same_prefix:
+            info(f"SimHub will be launched from within game prefix via batch script")
+
+        # Turn on Kiosk Browser
+        if args.kiosk_ip and args.kiosk_pw:
+            info("Turning on kiosk tablet screen")
+            try:
+                result = screen_on()
+                if result:
+                    info("Kiosk screen turned on successfully")
+                else:
+                    error("Failed to turn on kiosk screen")
+            except Exception as e:
+                error(f"Error turning on kiosk screen: {e}")
+
+        # 5. Launch Monocoque
+        monocoque_proc = None
+        if args.monocoque:
+            info("Launching Monocoque")
+            try:
+                monocoque_proc = Popen(["monocoque", "play"],
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        bufsize=1)
+
+                # Give it a moment to start properly
+                time.sleep(0.5)
+
+                # Check if it started successfully
+                if monocoque_proc.poll() is not None:
+                    error(f"Monocoque exited immediately with code {monocoque_proc.returncode}")
+                    monocoque_proc = None
+                else:
+                    info(f"Monocoque started successfully (PID: {monocoque_proc.pid})")
+            except FileNotFoundError:
+                error("Failed to launch Monocoque: monocoque command not found")
+                monocoque_proc = None
+            except Exception as e:
+                error(f"Failed to launch Monocoque: {e}")
+                monocoque_proc = None
+
+        # --- THE CLEANUP LOGIC ---
+        try:
+            info("Waiting for main game to exit...")
+            main_game_proc.wait()
+            info(f"Main game exited with code {main_game_proc.returncode}")
+        except KeyboardInterrupt:
+            info("Shutdown requested via keyboard...")
+            try:
+                main_game_proc.terminate()
+                info("Sent termination signal to main game")
+                main_game_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                info("Main game didn't exit, force killing...")
+                main_game_proc.kill()
+            except Exception as e:
+                error(f"Error terminating main game: {e}")
+        except Exception as e:
+            error(f"Error waiting for main game: {e}")
+        finally:
+            info("Main game closed. Initiating global cleanup...")
+
+            # Turn off Kiosk Browser
+            if args.kiosk_ip and args.kiosk_pw:
+                try:
+                    result = screen_off()
+                    if result:
+                        info("Kiosk screen turned off successfully")
+                    else:
+                        error("Failed to turn off kiosk screen")
+                except Exception as e:
+                    error(f"Error turning off kiosk screen: {e}")
+
+            # A. Kill Native Linux Bridge Groups
+            if ac_shm_proc:
+                info("Terminating AC Bridge...")
+                try:
+                    if kill_process_tree(ac_shm_proc.pid):
+                        info("AC Bridge terminated successfully")
+                    else:
+                        error("Failed to terminate AC Bridge")
+                except Exception as e:
+                    error(f"Error terminating AC Bridge: {e}")
+
+                # Clean up shm files
+                info("Cleaning up AC shm files")
+                for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics",
+                               "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static", "/dev/shm/acpmf_simhub_v2"]:
+                    try:
+                        if os.path.exists(shm_file):
+                            os.remove(shm_file)
+                            info(f"Removed {shm_file}")
+                    except PermissionError as e:
+                        error(f"Permission denied removing {shm_file}: {e}")
+                    except Exception as e:
+                        error(f"Failed to remove {shm_file}: {e}")
+
+            if pc2_shm_proc:
+                info("Terminating PC2 Bridge...")
+                try:
+                    if kill_process_tree(pc2_shm_proc.pid):
+                        info("PC2 Bridge terminated successfully")
+                    else:
+                        error("Failed to terminate PC2 Bridge")
+                except Exception as e:
+                    error(f"Error terminating PC2 Bridge: {e}")
+
+            # B. Kill Monocoque
+            if monocoque_proc:
+                info("Terminating Monocoque...")
+                try:
+                    if monocoque_proc.poll() is None:  # Still running
+                        monocoque_proc.terminate()
+                        try:
+                            monocoque_proc.wait(timeout=3)
+                            info("Monocoque terminated successfully")
+                        except subprocess.TimeoutExpired:
+                            info("Monocoque didn't exit, force killing...")
+                            monocoque_proc.kill()
+                            monocoque_proc.wait()
+                    else:
+                        info(f"Monocoque already exited with code {monocoque_proc.returncode}")
+                except Exception as e:
+                    error(f"Error terminating Monocoque: {e}")
+
+            # C. Kill SimHub and Bridge processes (only if launched externally)
+            if args.simhub and not args.simhub_same_prefix:
+                info("Terminating SimHub...")
+                try:
+                    if kill_by_name("SimHubWPF.exe"):
+                        info("SimHub terminated successfully")
+                    else:
+                        info("SimHub was not running or already terminated")
+                except Exception as e:
+                    error(f"Error terminating SimHub: {e}")
+
+                # Kill bridge by PID first if we have it, then by name as backup
+                if bridge_proc:
+                    try:
+                        if bridge_proc.poll() is None:
+                            info(f"Terminating Proton Bridge (PID: {bridge_proc.pid})...")
+                            bridge_proc.terminate()
+                            try:
+                                bridge_proc.wait(timeout=3)
+                                info("Bridge terminated successfully")
+                            except subprocess.TimeoutExpired:
+                                info("Bridge didn't exit, force killing...")
+                                bridge_proc.kill()
+                                bridge_proc.wait()
+                        else:
+                            info(f"Bridge already exited with code {bridge_proc.returncode}")
+                    except Exception as e:
+                        error(f"Error terminating bridge: {e}")
+            elif args.simhub and args.simhub_same_prefix:
+                info("SimHub cleanup handled in game prefix")
+
+            # E. Kill LookPilot
+            if args.lookpilot:
+                info("Terminating LookPilot...")
+                try:
+                    if kill_by_name("LookPilot"):
+                        info("LookPilot terminated successfully")
+                    else:
+                        info("LookPilot was not running or already terminated")
+                except Exception as e:
+                    error(f"Error terminating LookPilot: {e}")
+
+            # D. Kill other Windows/Wine executables by name
+            targets = [
+                "acbridge.exe",
+                "pcars2bridge.exe",
+                "opentrack.exe",
+                "TrackIR.exe",
+            ]
+
+            if PROTONBRIDGE:
+                targets.append(Path(PROTONBRIDGE).name)
+
+            for exe in targets:
+                try:
+                    if kill_by_name(exe):
+                        info(f"Terminated {exe}")
+                except Exception as e:
+                    error(f"Error terminating {exe}: {e}")
+
+            # F. Remove the hardlink
+            if PROTONBRIDGE and os.path.exists(PROTONBRIDGE):
+                try:
+                    info(f"Cleaning up {PROTONBRIDGE}")
+                    os.remove(PROTONBRIDGE)
+                    info("Cleaned up bridge link.")
+                except PermissionError as e:
+                    error(f"Permission denied cleaning up {PROTONBRIDGE}: {e}")
+                except Exception as e:
+                    error(f"Failed to clean up {PROTONBRIDGE}: {e}")
+
+        info("Cleanup complete. Exiting.")
+
+    except Exception as e:
+        error(f"Fatal error in main execution: {e}")
+        import traceback
+        error(f"Traceback: {traceback.format_exc()}")
+        exit(1)

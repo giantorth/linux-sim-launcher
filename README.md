@@ -9,7 +9,7 @@ Key Features
 ------------
 
 *   **Auto-updating Opentrack:** Automatically fetches and extracts the latest portable Windows version.
-    
+
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
 
 *   **Monocoque**: Launch Monocoque with the game.
@@ -17,9 +17,11 @@ Key Features
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
 
 *   **PC2 Bridge:** Supports Automobilista 2/Project Cars 2 shared memory bridging (Native + Proton components).
-    
+
 *   **LookPilot Support:** Toggle-able launch for LookPilot (AppID 3326890).
-    
+
+*   **Fully Kiosk Browser Integration:** Automatically turn tablet screens on/off via Fully Kiosk Browser REST API.  
+
 *   **Automatic Cleanup:** When the main game closes, the script automatically kills all associated .exe processes and native bridges.
     
 
@@ -27,13 +29,15 @@ Dependencies
 ------------
 
 *   **p7zip** (installed as 7z or 7za) - Required for extracting Opentrack.
-    
+
 *   **python3** - The core runner.
-    
+
+*   **python-requests** - Required for Fully Kiosk Browser integration.
+
 *   **protontricks** - Required for launching SimHub and the Proton Bridge.
 
 *   **[simshmbridge](https://github.com/spacefreak18/simshmbridge)** - Required for AC/ACE/ACR briding to simhub
-    
+
 *   **wget** - For installation.
 
 Installation
@@ -101,16 +105,22 @@ You can append flags to the launcher to enable specific tools:
 | --monocoque | Launch Monocoque. |
 | --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
 | --pc2bridge | Launch the Project Cars 2 (Automobilista 2) Shared Memory Bridge. |
-| --lookpilot | Launch LookPilot via Steam. | 
+| --lookpilot | Launch LookPilot via Steam. |
 | --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
 | --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
 | --simhub-pfx | Path to your Steam compatdata folder. |
 | --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
 | --simhub-same-prefix | Launch Simhub from the same prefix as the game, must already be installed |
+| --kiosk-ip | Set the IP address of a Fully Kiosk Browser for automatic screen sleep/wake. |
+| --kiosk-pw | Set the admin password for the Fully Kiosk Browser (required with --kiosk-ip). |
 
 **Example setup:**
 
 `   ~/.local/bin/sim-launcher --lookpilot --simhub --acbridge %command%   `
+
+**Example with Fully Kiosk Browser:**
+
+`   ~/.local/bin/sim-launcher --simhub --acbridge --kiosk-ip 192.168.1.100 --kiosk-pw your_password %command%   `
 
 Configuration & Folders
 -----------------------
