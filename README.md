@@ -36,7 +36,7 @@ Dependencies
 
 *   **protontricks** - Required for launching SimHub and the Proton Bridge.
 
-*   **[simshmbridge](https://github.com/spacefreak18/simshmbridge)** - Required for AC/ACE/ACR briding to simhub
+*   **git, make, mingw-w64-gcc** - Required for automatically building simshmbridge (only when using --acbridge or --pc2bridge flags). Package names may vary by distribution: `mingw-w64-gcc` (Arch/Pacman) or `gcc-mingw-w64` (Debian/Ubuntu/apt).
 
 *   **wget** - For installation.
 
@@ -47,13 +47,14 @@ Installation
 
 ```bash
 # Recommended: Local Install
-$ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher  
+$ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher
 # Alternative: System-wide (Requires sudo)
-$ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher   
+$ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher
 ```
-* Ensure you have compiled a working copy of [simshmbridge](https://github.com/spacefreak18/simshmbridge), follow directions on that repo to have the required tools.
 
-  * If you don't have it, install protontricks from your distro's package repo.
+* **Note:** [simshmbridge](https://github.com/giantorth/simshmbridge) is now automatically cloned and built when using `--acbridge` or `--pc2bridge` flags for the first time. Ensure you have the required build dependencies installed (git, make, mingw-w64-gcc).
+
+* If you don't have it, install protontricks from your distro's package repo.
 
 * Install simhub in it's own Steam prefix:
 
@@ -129,11 +130,13 @@ The launcher manages its own environment in ~/.local/share/sim-launcher:
 
 
 ```
-   ./sim-launcher  
-   ├── install/                # Extracted Opentrack portable files  
-   ├── scripts/                # Generated .bat files for Steam/Proton execution  
-   ├── opentrack-version.txt   # Tracks installed Opentrack version for updates  
-   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)   
+   ./sim-launcher
+   ├── install/                # Extracted Opentrack portable files
+   ├── scripts/                # Generated .bat files for Steam/Proton execution
+   ├── simshmbridge/           # Auto-cloned and built simshmbridge repository (when using bridge flags)
+   │   └── assets/             # Compiled bridge executables (acshm, acbridge.exe, pcars2shm, pcars2bridge.exe, etc.)
+   ├── opentrack-version.txt   # Tracks installed Opentrack version for updates
+   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)
 ```
     
 
@@ -141,9 +144,11 @@ How it Works
 ------------
 
 1.  **Detection:** The script parses the Steam %command% to identify the AppID and the Windows executable.
-    
-2.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
-    
-3.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
-    
-4.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
+
+2.  **Auto-Setup:** When bridge flags are used for the first time, simshmbridge is automatically cloned from GitHub and built with the necessary dependencies.
+
+3.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
+
+4.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
+
+5.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.

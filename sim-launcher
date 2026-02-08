@@ -77,12 +77,14 @@ LAUNCHERHOME = join(APPHOME, ".local/share/sim-launcher")
 OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
 SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
 SIMHUB_DEFAULT_PFX = expanduser("~/.local/share/Steam/steamapps/compatdata")
-SIMSHM = join( APPHOME, "src/simshmbridge/assets/" )
-ACSIMSHM = join( APPHOME, "src/simshmbridge/assets/acshm" )
-ACSIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/acbridge.exe" )
-PC2SIMSHM = join( APPHOME, "src/simshmbridge/assets/pcars2shm" )
-PC2SIMSHMBRIDGE = join( APPHOME, "src/simshmbridge/assets/pcars2bridge.exe" )
-DUMMYBRIDGE = join( APPHOME, "src/simshmbridge/assets/dummy.exe" )
+SIMSHMBRIDGE_REPO = "https://github.com/giantorth/simshmbridge"
+SIMSHMBRIDGE_DIR = join(LAUNCHERHOME, "simshmbridge")
+SIMSHM = join(SIMSHMBRIDGE_DIR, "assets/")
+ACSIMSHM = join(SIMSHMBRIDGE_DIR, "assets/acshm")
+ACSIMSHMBRIDGE = join(SIMSHMBRIDGE_DIR, "assets/acbridge.exe")
+PC2SIMSHM = join(SIMSHMBRIDGE_DIR, "assets/pcars2shm")
+PC2SIMSHMBRIDGE = join(SIMSHMBRIDGE_DIR, "assets/pcars2bridge.exe")
+DUMMYBRIDGE = join(SIMSHMBRIDGE_DIR, "assets/dummy.exe")
 PROTONBRIDGE = ""
 ZIPBINARY = ""
 KIOSK_PORT = "2323"          # Default Fully Kiosk port
@@ -491,6 +493,122 @@ def check7z():
         panic("7z is not installed. Please install p7zip or p7zip-full package")
     info(f"Found 7z binary: {ZIPBINARY}")
 
+def check_simshmbridge_dependencies():
+    """Check if required tools for building simshmbridge are available"""
+    missing = []
+
+    # Check for git
+    if not which("git"):
+        missing.append("git")
+
+    # Check for make
+    if not which("make"):
+        missing.append("make")
+
+    # Check for mingw cross-compiler (check common names)
+    mingw = which("x86_64-w64-mingw32-gcc") or which("i686-w64-mingw32-gcc") or which("mingw32-gcc")
+    if not mingw:
+        missing.append("mingw-w64-gcc (or gcc-mingw-w64)")
+
+    return missing
+
+def setup_simshmbridge():
+    """Clone and build simshmbridge if not present"""
+    # Check if simshmbridge directory exists and has built assets
+    needs_clone = not isdir(SIMSHMBRIDGE_DIR)
+    needs_build = needs_clone or not isfile(ACSIMSHMBRIDGE) or not isfile(PC2SIMSHMBRIDGE)
+
+    if not needs_clone and not needs_build:
+        info("simshmbridge is already set up")
+        return True
+
+    # Check dependencies
+    if needs_clone or needs_build:
+        missing_deps = check_simshmbridge_dependencies()
+        if missing_deps:
+            error("Cannot setup simshmbridge - missing dependencies:")
+            for dep in missing_deps:
+                error(f"  - {dep}")
+            error("Please install the missing packages and try again")
+            return False
+
+    # Create clean environment without Steam's LD_PRELOAD and other interference
+    clean_env = environ.copy()
+    for var in ["LD_PRELOAD", "LD_LIBRARY_PATH", "STEAM_RUNTIME_LIBRARY_PATH"]:
+        clean_env.pop(var, None)
+
+    # Clone repository if needed
+    if needs_clone:
+        info(f"Cloning simshmbridge from {SIMSHMBRIDGE_REPO} into {SIMSHMBRIDGE_DIR}...")
+        try:
+            # Double-check directory doesn't exist (race condition safety)
+            if isdir(SIMSHMBRIDGE_DIR):
+                info("Directory appeared since check, skipping clone")
+            else:
+                # Clone with recursive submodules
+                clone_cmd = ["git", "clone", "--recursive", SIMSHMBRIDGE_REPO, SIMSHMBRIDGE_DIR]
+                proc = Popen(clone_cmd, cwd=LAUNCHERHOME, stdout=PIPE, stderr=PIPE, env=clean_env)
+                stdout, stderr = proc.communicate()
+
+                if proc.returncode != 0:
+                    error(f"Failed to clone simshmbridge (exit code: {proc.returncode})")
+                    if stderr:
+                        error(f"Git error: {stderr.decode('utf-8', errors='ignore').strip()}")
+                    return False
+
+                info("Successfully cloned simshmbridge")
+        except Exception as e:
+            error(f"Error cloning simshmbridge: {e}")
+            return False
+    elif needs_build:
+        # If directory exists but needs rebuild, ensure submodules are up to date
+        info("Updating simshmbridge submodules...")
+        try:
+            submodule_cmd = ["git", "submodule", "update", "--init", "--recursive"]
+            Popen(submodule_cmd, cwd=SIMSHMBRIDGE_DIR, env=clean_env).wait()
+        except Exception as e:
+            error(f"Warning: Could not update submodules: {e}")
+
+    # Build simshmbridge
+    if needs_build:
+        info("Building simshmbridge (this may take a moment)...")
+        try:
+            # Clean and build
+            clean_cmd = ["make", "clean"]
+            build_cmd = ["make"]
+
+            info("Running: make clean")
+            proc = Popen(clean_cmd, cwd=SIMSHMBRIDGE_DIR, stdout=DEVNULL, stderr=PIPE, env=clean_env)
+            _, stderr = proc.communicate()
+            if proc.returncode != 0 and stderr:
+                error(f"make clean warning: {stderr.decode('utf-8', errors='ignore').strip()}")
+
+            info("Running: make")
+            proc = Popen(build_cmd, cwd=SIMSHMBRIDGE_DIR, stdout=DEVNULL, stderr=PIPE, env=clean_env)
+            _, stderr = proc.communicate()
+
+            if proc.returncode != 0:
+                error(f"Failed to build simshmbridge (exit code: {proc.returncode})")
+                if stderr:
+                    error(f"Build error: {stderr.decode('utf-8', errors='ignore').strip()}")
+                error("Check that mingw-w64-gcc is properly installed")
+                return False
+
+            # Verify outputs were created
+            if not isfile(ACSIMSHMBRIDGE) or not isfile(PC2SIMSHMBRIDGE):
+                error("Build completed but expected binaries were not found")
+                error(f"Expected: {ACSIMSHMBRIDGE} and {PC2SIMSHMBRIDGE}")
+                return False
+
+            info("Successfully built simshmbridge")
+            return True
+
+        except Exception as e:
+            error(f"Error building simshmbridge: {e}")
+            return False
+
+    return True
+
 def validate_paths():
     """Validate critical paths and executables based on enabled features"""
     issues = []
@@ -615,6 +733,14 @@ if __name__ == '__main__':
     try:
         check7z()
         makehome()
+
+        # Setup simshmbridge if any bridge is requested or SimHub needs it
+        needs_bridge = args.acbridge or args.pc2bridge or (args.simhub and not args.simhub_same_prefix)
+        if needs_bridge:
+            info("Setting up simshmbridge...")
+            if not setup_simshmbridge():
+                panic("Failed to setup simshmbridge - cannot continue with bridge support")
+
         validate_paths()
 
         appid = findappid()
@@ -838,17 +964,17 @@ if __name__ == '__main__':
                     error(f"Error terminating AC Bridge: {e}")
 
                 # Clean up shm files
-                info("Cleaning up AC shm files")
-                for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics",
-                               "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static", "/dev/shm/acpmf_simhub_v2"]:
-                    try:
-                        if os.path.exists(shm_file):
-                            os.remove(shm_file)
-                            info(f"Removed {shm_file}")
-                    except PermissionError as e:
-                        error(f"Permission denied removing {shm_file}: {e}")
-                    except Exception as e:
-                        error(f"Failed to remove {shm_file}: {e}")
+                # info("Cleaning up AC shm files")
+                # for shm_file in ["/dev/shm/acpmf_crewchief", "/dev/shm/acpmf_graphics",
+                #                "/dev/shm/acpmf_physics", "/dev/shm/acpmf_static", "/dev/shm/acpmf_simhub_v2"]:
+                #     try:
+                #         if os.path.exists(shm_file):
+                #             os.remove(shm_file)
+                #             info(f"Removed {shm_file}")
+                #     except PermissionError as e:
+                #         error(f"Permission denied removing {shm_file}: {e}")
+                #     except Exception as e:
+                #         error(f"Failed to remove {shm_file}: {e}")
 
             if pc2_shm_proc:
                 info("Terminating PC2 Bridge...")
