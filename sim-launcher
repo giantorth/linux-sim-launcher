@@ -22,8 +22,162 @@ from urllib.error import URLError
 from urllib.request import urlopen, urlretrieve
 
 import requests
+import vdf
 
 VERSION = "1.0.0"
+
+
+# --- Steam Library Discovery ---
+def get_steam_libraries() -> list[Path]:
+    """Get all Steam library paths from libraryfolders.vdf."""
+    vdf_path = Path.home() / ".local/share/Steam/config/libraryfolders.vdf"
+
+    # Also check Flatpak location
+    flatpak_vdf = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"
+    if Path("/.flatpak-info").is_file() and flatpak_vdf.is_file():
+        vdf_path = flatpak_vdf
+
+    libraries = []
+
+    if not vdf_path.is_file():
+        default = Path.home() / ".local/share/Steam"
+        if default.is_dir():
+            libraries.append(default)
+        return libraries
+
+    try:
+        with open(vdf_path) as f:
+            data = vdf.load(f)
+
+        if "libraryfolders" in data:
+            folders = data["libraryfolders"]
+            for key, value in folders.items():
+                if isinstance(value, dict) and "path" in value:
+                    lib_path = Path(value["path"])
+                    if lib_path.is_dir():
+                        libraries.append(lib_path)
+    except Exception as e:
+        if log:
+            log.warning(f"Failed to parse libraryfolders.vdf: {e}")
+        default = Path.home() / ".local/share/Steam"
+        if default.is_dir():
+            libraries.append(default)
+
+    return libraries
+
+
+def find_library_for_appid(appid: str) -> Optional[Path]:
+    """Find which Steam library contains a given AppID."""
+    vdf_path = Path.home() / ".local/share/Steam/config/libraryfolders.vdf"
+
+    flatpak_vdf = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"
+    if Path("/.flatpak-info").is_file() and flatpak_vdf.is_file():
+        vdf_path = flatpak_vdf
+
+    if not vdf_path.is_file():
+        return None
+
+    try:
+        with open(vdf_path) as f:
+            data = vdf.load(f)
+
+        if "libraryfolders" in data:
+            folders = data["libraryfolders"]
+            for key, value in folders.items():
+                if isinstance(value, dict) and "path" in value and "apps" in value:
+                    apps = value["apps"]
+                    if isinstance(apps, dict) and appid in apps:
+                        lib_path = Path(value["path"])
+                        if lib_path.is_dir():
+                            return lib_path
+    except Exception as e:
+        if log:
+            log.warning(f"Failed to find library for AppID {appid}: {e}")
+
+    return None
+
+
+def get_compatdata_path(appid: str) -> Optional[Path]:
+    """Get the compatdata path for a given AppID."""
+    library = find_library_for_appid(appid)
+    if library:
+        compatdata = library / "steamapps/compatdata" / appid
+        if compatdata.is_dir():
+            return compatdata
+
+    # Fallback: check all libraries
+    for library in get_steam_libraries():
+        compatdata = library / "steamapps/compatdata" / appid
+        if compatdata.is_dir():
+            return compatdata
+
+    return None
+
+
+def find_simhub_appid() -> Optional[str]:
+    """Auto-detect SimHub's Steam AppID from shortcuts.vdf.
+
+    Non-Steam games are stored in Steam's shortcuts.vdf file with their
+    generated AppIDs. This function searches for SimHub entries and
+    extracts the AppID.
+    """
+    import struct
+
+    # Determine Steam userdata path
+    if Path("/.flatpak-info").is_file():
+        userdata_path = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/userdata"
+    else:
+        userdata_path = Path.home() / ".local/share/Steam/userdata"
+
+    if not userdata_path.is_dir():
+        return None
+
+    # Check each user's shortcuts.vdf
+    for user_dir in userdata_path.iterdir():
+        if not user_dir.is_dir():
+            continue
+
+        vdf_file = user_dir / "config/shortcuts.vdf"
+        if not vdf_file.is_file():
+            continue
+
+        try:
+            with open(vdf_file, 'rb') as f:
+                content = f.read()
+
+            # Look for SimHub entries (case-insensitive search)
+            content_lower = content.lower()
+            if b'simhub' not in content_lower:
+                continue
+
+            # Find all occurrences of 'simhub' and look for nearby appid
+            idx = 0
+            while True:
+                idx = content_lower.find(b'simhub', idx)
+                if idx == -1:
+                    break
+
+                # Look backwards for 'appid' field
+                # Binary VDF format: \x02appid\x00<4 bytes little-endian uint32>
+                search_start = max(0, idx - 300)
+                chunk = content[search_start:idx + 50]
+
+                appid_marker = b'\x02appid\x00'
+                appid_idx = chunk.find(appid_marker)
+                if appid_idx != -1:
+                    appid_bytes = chunk[appid_idx + len(appid_marker):appid_idx + len(appid_marker) + 4]
+                    if len(appid_bytes) == 4:
+                        appid = struct.unpack('<I', appid_bytes)[0]
+                        if appid > 0:
+                            return str(appid)
+
+                idx += 1
+
+        except Exception as e:
+            # Log will be initialized later, so we can't use it here
+            continue
+
+    return None
 
 # --- Logging Setup ---
 def setup_logging(debug_enabled: bool, log_dir: Path) -> logging.Logger:
@@ -106,7 +260,7 @@ APPHOME = Path(getenv("HOME")) if not Path("/.flatpak-info").is_file() else Path
 LAUNCHERHOME = APPHOME / ".local/share/sim-launcher"
 OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
 SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
-SIMHUB_DEFAULT_PFX = Path.home() / ".local/share/Steam/steamapps/compatdata"
+# SIMHUB_DEFAULT_PFX is computed dynamically via get_compatdata_path()
 SIMSHMBRIDGE_REPO = "https://github.com/giantorth/simshmbridge"
 SIMSHMBRIDGE_DIR = LAUNCHERHOME / "simshmbridge"
 SIMSHM = SIMSHMBRIDGE_DIR / "assets"
@@ -191,9 +345,9 @@ parser = argparse.ArgumentParser(description='Launch Steam games with optional O
 parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
 parser.add_argument('--opentrack', action='store_true', help='Launch OpenTrack')
 parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
-parser.add_argument('--simhub-pfx', default=str(SIMHUB_DEFAULT_PFX), type=Path, help='Path to Steam pfx for SimHub')
+parser.add_argument('--simhub-pfx', type=Path, help='Path to Steam compatdata (auto-detected if not specified)')
 parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
-parser.add_argument('--simhub-appid', default="2825720939", help='SimHub Steam AppID')
+parser.add_argument('--simhub-appid', default=None, help='SimHub Steam AppID (auto-detected if not specified)')
 parser.add_argument('--simhub-same-prefix', action='store_true', help='Launch SimHub in the same prefix as the game')
 parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
 parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
@@ -379,19 +533,41 @@ def getsimhub(game_appid: str) -> Optional[Path]:
         if args.simhub_same_prefix:
             simhub_appid = game_appid
             info(f"Using game's AppID for SimHub: {simhub_appid}")
-        else:
+        elif args.simhub_appid:
             simhub_appid = args.simhub_appid
+            info(f"Using specified SimHub AppID: {simhub_appid}")
+        else:
+            # Auto-detect SimHub's AppID from Steam shortcuts
+            simhub_appid = find_simhub_appid()
+            if not simhub_appid:
+                error("Could not auto-detect SimHub AppID from Steam shortcuts")
+                error("Please add SimHub as a non-Steam game in Steam, or specify --simhub-appid")
+                return None
+            info(f"Auto-detected SimHub AppID: {simhub_appid}")
 
         # Store the appid for later use
         state.simhub_appid = simhub_appid
 
-        simhub_pfx_path = args.simhub_pfx / simhub_appid / "pfx/drive_c"
+        # Find the compatdata path - prefer explicit arg, then auto-detect
+        if args.simhub_pfx:
+            compatdata = args.simhub_pfx / simhub_appid
+        else:
+            compatdata = get_compatdata_path(simhub_appid)
+
+        if not compatdata:
+            error(f"Could not find compatdata for AppID {simhub_appid}")
+            error("Try specifying --simhub-pfx manually")
+            return None
+
+        simhub_pfx_path = compatdata / "pfx/drive_c"
 
         # Check if prefix path exists
         if not simhub_pfx_path.is_dir():
             error(f"SimHub prefix path does not exist: {simhub_pfx_path}")
             error(f"Please ensure the prefix for AppID {simhub_appid} is valid")
             return None
+
+        info(f"Using compatdata: {compatdata}")
 
         possible_paths = [
             simhub_pfx_path / "program files/SimHub" / args.simhub_exe,
@@ -687,7 +863,7 @@ def validate_paths() -> bool:
     if args.simhub and not args.simhub_same_prefix:
         if not which("protontricks-launch"):
             issues.append("protontricks-launch not found - required for SimHub in separate prefix")
-        if not args.simhub_pfx.is_dir():
+        if args.simhub_pfx and not args.simhub_pfx.is_dir():
             issues.append(f"SimHub prefix directory not found: {args.simhub_pfx}")
 
     if args.lookpilot:
