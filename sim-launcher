@@ -490,7 +490,7 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
     # Launch SimHub if it's in the same prefix
     if simhubwine:
         lines.append(f"start \"\" \"{simhubwine}\"\r\n")
-        lines.append("ping -n 11 127.0.0.1 >nul\r\n")  # ~10 second delay for SimHub to initialize
+        lines.append("ping -n 6 127.0.0.1 >nul\r\n")  # ~5 second delay for SimHub to initialize
 
     # 2. Launch Logic (Conditional on pc2bridge)
     if args.pc2bridge:
@@ -770,6 +770,15 @@ def kill_by_name(name: str, force: bool = False) -> bool:
 
 def cleanup_shm_files() -> None:
     """Clean up shared memory files created by AC bridge."""
+    # Skip cleanup if simd is running (it needs these files)
+    try:
+        result = subprocess.run(["pgrep", "-x", "simd"], capture_output=True)
+        if result.returncode == 0:
+            info("simd is running, skipping shm file cleanup")
+            return
+    except Exception as e:
+        error(f"Error checking for simd process: {e}")
+
     shm_files = [
         "/dev/shm/acpmf_crewchief",
         "/dev/shm/acpmf_graphics",
