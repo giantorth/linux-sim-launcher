@@ -9,7 +9,7 @@ Key Features
 ------------
 
 *   **Auto-updating Opentrack:** Automatically fetches and extracts the latest portable Windows version.
-    
+
 *   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
 
 *   **Monocoque**: Launch Monocoque with the game.
@@ -17,9 +17,11 @@ Key Features
 *   **AC Bridge:** Supports Assetto Corsa shared memory bridging (Native + Proton components).
 
 *   **PC2 Bridge:** Supports Automobilista 2/Project Cars 2 shared memory bridging (Native + Proton components).
-    
+
 *   **LookPilot Support:** Toggle-able launch for LookPilot (AppID 3326890).
-    
+
+*   **Fully Kiosk Browser Integration:** Automatically turn tablet screens on/off via Fully Kiosk Browser REST API.  
+
 *   **Automatic Cleanup:** When the main game closes, the script automatically kills all associated .exe processes and native bridges.
     
 
@@ -27,13 +29,15 @@ Dependencies
 ------------
 
 *   **p7zip** (installed as 7z or 7za) - Required for extracting Opentrack.
-    
+
 *   **python3** - The core runner.
-    
+
+*   **python-requests** - Required for Fully Kiosk Browser integration.
+
 *   **protontricks** - Required for launching SimHub and the Proton Bridge.
 
-*   **[simshmbridge](https://github.com/spacefreak18/simshmbridge)** - Required for AC/ACE/ACR briding to simhub
-    
+*   **git, make, mingw-w64-gcc** - Required for automatically building simshmbridge (only when using --acbridge or --pc2bridge flags). Package names may vary by distribution: `mingw-w64-gcc` (Arch/Pacman) or `gcc-mingw-w64` (Debian/Ubuntu/apt).
+
 *   **wget** - For installation.
 
 Installation
@@ -43,13 +47,14 @@ Installation
 
 ```bash
 # Recommended: Local Install
-$ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher  
+$ mkdir -p ~/.local/bin && wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O ~/.local/bin/sim-launcher && chmod +x ~/.local/bin/sim-launcher
 # Alternative: System-wide (Requires sudo)
-$ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher   
+$ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/sim-launcher -O /usr/local/bin/sim-launcher && sudo chmod +x /usr/local/bin/sim-launcher
 ```
-* Ensure you have compiled a working copy of [simshmbridge](https://github.com/spacefreak18/simshmbridge), follow directions on that repo to have the required tools.
 
-  * If you don't have it, install protontricks from your distro's package repo.
+* **Note:** [simshmbridge](https://github.com/giantorth/simshmbridge) is now automatically cloned and built when using `--acbridge` or `--pc2bridge` flags for the first time. Ensure you have the required build dependencies installed (git, make, mingw-w64-gcc).
+
+* If you don't have it, install protontricks from your distro's package repo.
 
 * Install simhub in it's own Steam prefix:
 
@@ -101,16 +106,22 @@ You can append flags to the launcher to enable specific tools:
 | --monocoque | Launch Monocoque. |
 | --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
 | --pc2bridge | Launch the Project Cars 2 (Automobilista 2) Shared Memory Bridge. |
-| --lookpilot | Launch LookPilot via Steam. | 
+| --lookpilot | Launch LookPilot via Steam. |
 | --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
 | --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
 | --simhub-pfx | Path to your Steam compatdata folder. |
 | --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
 | --simhub-same-prefix | Launch Simhub from the same prefix as the game, must already be installed |
+| --kiosk-ip | Set the IP address of a Fully Kiosk Browser for automatic screen sleep/wake. |
+| --kiosk-pw | Set the admin password for the Fully Kiosk Browser (required with --kiosk-ip). |
 
 **Example setup:**
 
 `   ~/.local/bin/sim-launcher --lookpilot --simhub --acbridge %command%   `
+
+**Example with Fully Kiosk Browser:**
+
+`   ~/.local/bin/sim-launcher --simhub --acbridge --kiosk-ip 192.168.1.100 --kiosk-pw your_password %command%   `
 
 Configuration & Folders
 -----------------------
@@ -119,11 +130,13 @@ The launcher manages its own environment in ~/.local/share/sim-launcher:
 
 
 ```
-   ./sim-launcher  
-   ├── install/                # Extracted Opentrack portable files  
-   ├── scripts/                # Generated .bat files for Steam/Proton execution  
-   ├── opentrack-version.txt   # Tracks installed Opentrack version for updates  
-   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)   
+   ./sim-launcher
+   ├── install/                # Extracted Opentrack portable files
+   ├── scripts/                # Generated .bat files for Steam/Proton execution
+   ├── simshmbridge/           # Auto-cloned and built simshmbridge repository (when using bridge flags)
+   │   └── assets/             # Compiled bridge executables (acshm, acbridge.exe, pcars2shm, pcars2bridge.exe, etc.)
+   ├── opentrack-version.txt   # Tracks installed Opentrack version for updates
+   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)
 ```
     
 
@@ -131,9 +144,11 @@ How it Works
 ------------
 
 1.  **Detection:** The script parses the Steam %command% to identify the AppID and the Windows executable.
-    
-2.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
-    
-3.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
-    
-4.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
+
+2.  **Auto-Setup:** When bridge flags are used for the first time, simshmbridge is automatically cloned from GitHub and built with the necessary dependencies.
+
+3.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
+
+4.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
+
+5.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
