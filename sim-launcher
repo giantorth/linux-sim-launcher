@@ -1197,6 +1197,57 @@ def main() -> None:
                 for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
                     clean_env.pop(var, None)
 
+                info(f"Launching SimHub: {args.simhub_exe} (AppID: {state.simhub_appid})")
+                try:
+                    state.simhub_proc = Popen(
+                        [pt_launcher, "--appid", str(state.simhub_appid), str(simhubexec)],
+                        env=clean_env, start_new_session=True,
+                        stdout=DEVNULL, stderr=DEVNULL)
+                    info(f"SimHub launched (PID: {state.simhub_proc.pid})")
+                    info("Waiting for SimHub to initialize...")
+                    time.sleep(10)
+                except Exception as e:
+                    error(f"Failed to launch SimHub: {e}")
+                    state.simhub_proc = None
+
+            except Exception as e:
+                error(f"Error setting up SimHub: {e}")
+
+    elif args.simhub and simhubexec and args.simhub_same_prefix:
+        info("SimHub will be launched from batch script with delay before game starts")
+
+    # Prepare and launch the main game
+    final_argv = list(argv_original)
+    exe_found = False
+    for i in range(len(final_argv) - 1, -1, -1):
+        if final_argv[i].endswith(".exe"):
+            final_argv[i] = str(launcherscript)
+            exe_found = True
+            break
+
+    if not exe_found:
+        panic("Could not find executable in command line arguments")
+
+    info(f"Final execution command: {' '.join(final_argv[1:])}")
+    try:
+        state.main_game_proc = Popen(final_argv[1:])
+        info(f"Main game launched (PID: {state.main_game_proc.pid})")
+    except FileNotFoundError as e:
+        panic(f"Failed to launch game - command not found: {e}")
+    except Exception as e:
+        panic(f"Failed to launch main game: {e}")
+
+    # Launch SimHub and Proton Bridge BEFORE the main game (only if NOT in same prefix)
+    if args.simhub and simhubexec and not args.simhub_same_prefix:
+        pt_launcher = which("protontricks-launch")
+        if not pt_launcher:
+            error("protontricks-launch not found - cannot launch SimHub in separate prefix")
+        else:
+            try:
+                clean_env = os.environ.copy()
+                for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
+                    clean_env.pop(var, None)
+
                 # Create hardlink for bridge
                 if state.proton_bridge and state.proton_bridge.exists():
                     state.proton_bridge.unlink()
@@ -1225,45 +1276,11 @@ def main() -> None:
                         error(f"Failed to launch Proton Bridge: {e}")
                         state.bridge_proc = None
 
-                info(f"Launching SimHub: {args.simhub_exe} (AppID: {state.simhub_appid})")
-                try:
-                    state.simhub_proc = Popen(
-                        [pt_launcher, "--appid", str(state.simhub_appid), str(simhubexec)],
-                        env=clean_env, start_new_session=True,
-                        stdout=DEVNULL, stderr=DEVNULL)
-                    info(f"SimHub launched (PID: {state.simhub_proc.pid})")
-                    info("Waiting for SimHub to initialize...")
-                    time.sleep(10)
-                except Exception as e:
-                    error(f"Failed to launch SimHub: {e}")
-                    state.simhub_proc = None
-
             except Exception as e:
-                error(f"Error setting up SimHub/Bridge: {e}")
+                error(f"Error setting up Bridge: {e}")
 
     elif args.simhub and simhubexec and args.simhub_same_prefix:
         info("SimHub will be launched from batch script with delay before game starts")
-
-    # Prepare and launch the main game
-    final_argv = list(argv_original)
-    exe_found = False
-    for i in range(len(final_argv) - 1, -1, -1):
-        if final_argv[i].endswith(".exe"):
-            final_argv[i] = str(launcherscript)
-            exe_found = True
-            break
-
-    if not exe_found:
-        panic("Could not find executable in command line arguments")
-
-    info(f"Final execution command: {' '.join(final_argv[1:])}")
-    try:
-        state.main_game_proc = Popen(final_argv[1:])
-        info(f"Main game launched (PID: {state.main_game_proc.pid})")
-    except FileNotFoundError as e:
-        panic(f"Failed to launch game - command not found: {e}")
-    except Exception as e:
-        panic(f"Failed to launch main game: {e}")
 
     # Turn on Kiosk Browser
     if args.kiosk_ip and args.kiosk_pw:
