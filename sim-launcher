@@ -5,6 +5,7 @@ sim-launcher: Launch Steam games with optional OpenTrack, SimHub, and other sim 
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from urllib.request import urlopen, urlretrieve
 import requests
 import vdf
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 # --- Steam Library Discovery ---
@@ -270,6 +271,135 @@ PC2SIMSHM = SIMSHMBRIDGE_DIR / "assets/pcars2shm"
 PC2SIMSHMBRIDGE = SIMSHMBRIDGE_DIR / "assets/pcars2bridge.exe"
 DUMMYBRIDGE = SIMSHMBRIDGE_DIR / "assets/dummy.exe"
 DEFAULT_KIOSK_PORT = "2323"
+CONFIG_DIR = Path.home() / ".config/sim-launcher"
+
+CONFIG_FILE = CONFIG_DIR / "config.conf"
+
+BOOL_OPTIONS = frozenset({
+    'opentrack', 'simhub', 'simhub-same-prefix', 'monocoque', 'lookpilot',
+    'acbridge', 'pc2bridge', 'debug', 'dry-run', 'clean-shm',
+})
+
+EXAMPLE_CONFIG = """\
+## sim-launcher configuration
+## Global defaults go in [options], per-game overrides in [<steam-appid>] sections.
+## CLI arguments always override config values.
+## Boolean options accept: true/false, yes/no, 1/0
+
+[options]
+# simhub-appid = 12345678
+# simhub-exe = SimHubWPF.exe
+# simhub-pfx = /path/to/steam/compatdata
+# kiosk-ip = 192.168.1.100
+# kiosk-pw = secret
+# kiosk-port = 2323
+# kiosk-url = http://192.168.0.100:8888/Dash
+# kiosk-dash = #ControlCenter
+
+# # Assetto Corsa
+# [244210]
+# lookpilot = true
+# simhub-same-prefix = true
+# acbridge = true
+# clean-shm = true
+# kiosk-dash = #AssettoCorsaDash
+
+## Assetto Corsa Competizione
+# [805550]
+# simhub = true
+# acbridge = true
+# kiosk-dash = #ACCDash
+
+## Assetto Corsa Evo
+# [2980600]
+# opentrack = true
+# simhub = true
+# acbridge = true
+
+## Assetto Corsa Rally
+# [3046480]
+# opentrack = true
+# simhub = true
+# acbridge = true
+
+## DiRT Rally 2.0
+# [690790]
+# simhub = true
+
+## American Truck Simulator
+# [270880]
+# simhub-same-prefix = true
+
+## Euro Truck Simulator 2
+# [227300]
+# simhub = true
+
+## Automobilista 2
+# [1066890]
+# simhub = true
+# pc2bridge = true
+
+## BeamNG.drive
+# [284160]
+# simhub = true
+# lookpilot = true
+
+## Wreckfest 2
+# [1203190]
+# simhub = true
+"""
+
+
+def _find_appid_early() -> Optional[str]:
+    """Extract AppID from sys.argv before argument parsing."""
+    for arg in argv:
+        if APPIDSIG in arg:
+            return arg[len(APPIDSIG):]
+    return None
+
+
+def _parse_config_section(config: configparser.ConfigParser, section: str) -> dict:
+    """Parse a config section into a dict of argparse-compatible values."""
+    if not config.has_section(section):
+        return {}
+
+    result = {}
+    for key, value in config.items(section):
+        dest = key.replace('-', '_')
+        if key in BOOL_OPTIONS:
+            result[dest] = config.getboolean(section, key)
+        elif key == 'simhub-pfx':
+            result[dest] = Path(value)
+        else:
+            result[dest] = value
+
+    return result
+
+
+def load_config(appid: Optional[str] = None) -> dict:
+    """Load config from ~/.config/sim-launcher/config.conf.
+
+    Reads the [options] section for global defaults, then merges
+    the [<appid>] section on top if an appid is provided.
+    Creates an example config if the file doesn't exist.
+    """
+    if not CONFIG_FILE.is_file():
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(EXAMPLE_CONFIG)
+        except OSError:
+            pass
+        return {}
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+
+    result = _parse_config_section(config, "options")
+
+    if appid and config.has_section(appid):
+        result.update(_parse_config_section(config, appid))
+
+    return result
 
 
 @dataclass
@@ -298,7 +428,7 @@ def _signal_handler(signum, frame):
     info(f"Received {signal.Signals(signum).name}, shutting down...")
     raise SystemExit(0)
 
-def send_kiosk_command(cmd: str, ip: str, password: str, port: str) -> Optional[dict]:
+def send_kiosk_command(cmd: str, ip: str, password: str, port: str, extra_params: Optional[dict] = None) -> Optional[dict]:
     """Send a command to Fully Kiosk Browser."""
     url = f"http://{ip}:{port}/"
     params = {
@@ -306,6 +436,8 @@ def send_kiosk_command(cmd: str, ip: str, password: str, port: str) -> Optional[
         "password": password,
         "type": "json"
     }
+    if extra_params:
+        params.update(extra_params)
     try:
         info(f"Sending kiosk command: {cmd}")
         response = requests.get(url, params=params, timeout=5)
@@ -347,6 +479,35 @@ def screen_off(args: argparse.Namespace) -> Optional[dict]:
     """Turn kiosk screen off."""
     return send_kiosk_command("screenOff", args.kiosk_ip, args.kiosk_pw, args.kiosk_port)
 
+
+def wait_for_simhub_web(url: str, timeout: int = 30, interval: int = 1) -> bool:
+    """Poll SimHub's web server until it responds or timeout is reached."""
+    base_url = url.rstrip("/") + "/"
+    info(f"Waiting for SimHub web server at {base_url} (timeout: {timeout}s)...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            response = requests.get(base_url, timeout=3)
+            if response.status_code == 200:
+                info("SimHub web server is ready")
+                return True
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            pass
+        time.sleep(interval)
+    error(f"SimHub web server did not respond within {timeout}s")
+    return False
+
+
+def load_kiosk_url(args: argparse.Namespace) -> Optional[dict]:
+    """Navigate kiosk to the SimHub dashboard URL."""
+    url = args.kiosk_url.rstrip("/") + "/"
+    if args.kiosk_dash:
+        url += args.kiosk_dash
+    info(f"Loading kiosk URL: {url}")
+    return send_kiosk_command("loadUrl", args.kiosk_ip, args.kiosk_pw, args.kiosk_port,
+                              extra_params={"url": url})
+
+
 # Command line arguments
 parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
 parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
@@ -363,16 +524,35 @@ parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Car
 parser.add_argument('--kiosk-ip', dest='kiosk_ip', help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
 parser.add_argument('--kiosk-pw', dest='kiosk_pw', help="Set the admin password of a Fully Kiosk Browser for automatic sleep/wake")
 parser.add_argument('--kiosk-port', dest='kiosk_port', default=DEFAULT_KIOSK_PORT, help=f"Fully Kiosk Browser port (default: {DEFAULT_KIOSK_PORT})")
+parser.add_argument('--kiosk-url', dest='kiosk_url', help="Base SimHub dashboard URL (e.g., http://10.0.1.48:8888/)")
+parser.add_argument('--kiosk-dash', dest='kiosk_dash', help="Dashboard fragment to append to kiosk URL (e.g., #ControlCenter)")
 parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
 parser.add_argument('--dry-run', action='store_true', help='Show what would be launched without executing')
 parser.add_argument('--clean-shm', action='store_true', help='Clean up shared memory files after AC bridge exits')
+# Load config: [options] globals merged with [<appid>] overrides (CLI args override all)
+_early_appid = _find_appid_early()
+_loaded_config = load_config(_early_appid)
+if _loaded_config:
+    parser.set_defaults(**_loaded_config)
+
 args, unknown_args = parser.parse_known_args()
+
+# simhub-same-prefix implies simhub
+if args.simhub_same_prefix:
+    args.simhub = True
 
 # Ensure launcher home exists before logging setup
 LAUNCHERHOME.mkdir(parents=True, exist_ok=True)
 
 # Initialize Logger
 log = setup_logging(args.debug, LAUNCHERHOME)
+
+# Log config file usage
+if _loaded_config:
+    sections = "[options]"
+    if _early_appid:
+        sections += f" + [{_early_appid}]"
+    info(f"Loaded config from {CONFIG_FILE} ({sections})")
 
 # Restore original argv for Steam compatibility
 argv_original = argv[:1] + unknown_args
@@ -699,6 +879,13 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
     else:
         # STANDARD SYNC Launch for everything else
         lines.append(f"start /wait \"\" \"{appwine}\" {appargs}\r\n")
+
+    # Signal game exit to the launcher via marker file so it doesn't
+    # have to wait for Proton's wineserver to fully shut down.
+    marker = scripts / f"{appid}.exit"
+    marker.unlink(missing_ok=True)
+    markerwine = towinepath(marker)
+    lines.append(f"echo.> \"{markerwine}\"\r\n")
 
     if opentrackexec:
         lines.append("taskkill /IM opentrack.exe /F >nul 2>&1\r\n")
@@ -1170,6 +1357,11 @@ def main() -> None:
             info("LookPilot: enabled")
         if args.kiosk_ip:
             info(f"Kiosk: {args.kiosk_ip}:{args.kiosk_port}")
+            if args.kiosk_url:
+                dash_url = args.kiosk_url.rstrip("/") + "/"
+                if args.kiosk_dash:
+                    dash_url += args.kiosk_dash
+                info(f"Kiosk dashboard: {dash_url}")
         info("=== END DRY RUN ===")
         return
 
@@ -1315,6 +1507,18 @@ def main() -> None:
                     error("Failed to turn on kiosk screen")
             except Exception as e:
                 error(f"Error turning on kiosk screen: {e}")
+            if args.kiosk_url and args.kiosk_dash:
+                if wait_for_simhub_web(args.kiosk_url):
+                    try:
+                        result = load_kiosk_url(args)
+                        if result:
+                            info("Kiosk dashboard loaded successfully")
+                        else:
+                            error("Failed to load kiosk dashboard")
+                    except Exception as e:
+                        error(f"Error loading kiosk dashboard: {e}")
+                else:
+                    error("Skipping kiosk URL load - SimHub web server not ready")
 
         # Launch Monocoque
         if args.monocoque:
@@ -1342,10 +1546,20 @@ def main() -> None:
                 error(f"Failed to launch Monocoque: {e}")
                 state.monocoque_proc = None
 
-        # Wait for main game to exit
+        # Wait for main game to exit. Poll for a marker file that the
+        # batch script creates right when the game exits, so we don't have
+        # to wait for Proton's wineserver to fully shut down.
         info("Waiting for main game to exit...")
-        state.main_game_proc.wait()
-        info(f"Main game exited with code {state.main_game_proc.returncode}")
+        marker = LAUNCHERHOME / "scripts" / f"{appid}.exit"
+        while not marker.exists():
+            if state.main_game_proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        if marker.exists():
+            info("Game exit detected")
+            marker.unlink(missing_ok=True)
+        else:
+            info(f"Proton exited with code {state.main_game_proc.returncode}")
 
     except (KeyboardInterrupt, SystemExit):
         info("Shutdown requested, terminating main game...")

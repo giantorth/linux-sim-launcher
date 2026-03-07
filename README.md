@@ -113,6 +113,8 @@ You can append flags to the launcher to enable specific tools:
 | --kiosk-ip | Set the IP address of a Fully Kiosk Browser for automatic screen sleep/wake. |
 | --kiosk-pw | Set the admin password of the Fully Kiosk Browser (required with --kiosk-ip). |
 | --kiosk-port | Set the port for Fully Kiosk Browser (Default: 2323). |
+| --kiosk-url | Base SimHub dashboard URL (e.g., `http://192.168.1.100:8888/`). |
+| --kiosk-dash | Dashboard fragment to append to the kiosk URL (e.g., `#ControlCenter`). Per-game in config. |
 | --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
 | --dry-run | Show what would be launched without executing. |
 | --clean-shm | Clean up shared memory files after AC bridge exits. |
@@ -134,10 +136,87 @@ These flags are rarely needed since the launcher auto-detects SimHub's AppID fro
 
 **Example with Fully Kiosk Browser:**
 
-`   ~/.local/bin/sim-launcher --simhub --acbridge --kiosk-ip 192.168.1.100 --kiosk-pw your_password %command%   `
+`   ~/.local/bin/sim-launcher --simhub --acbridge --kiosk-ip 192.168.1.100 --kiosk-pw your_password --kiosk-url http://192.168.1.100:8888/ %command%   `
 
-Configuration & Folders
------------------------
+Configuration
+-------------
+
+On first run, an example config file is created at `~/.config/sim-launcher/config.conf`. Global settings go in the `[options]` section, and per-game overrides go in sections named by Steam App ID. CLI arguments always take priority over config values.
+
+```ini
+# ~/.config/sim-launcher/config.conf
+
+[options]
+# simhub-appid = 12345678
+# simhub-exe = SimHubWPF.exe
+# simhub-pfx = /path/to/steam/compatdata
+kiosk-ip = 192.168.1.100
+kiosk-pw = secret
+kiosk-port = 2323
+kiosk-url = http://192.168.1.100:8888/Dash
+kiosk-dash = #ControlCenter
+
+# Assetto Corsa
+[244210]
+lookpilot = true
+simhub-same-prefix = true
+acbridge = true
+clean-shm = true
+kiosk-dash = #AssettoCorsaDash
+
+# Assetto Corsa Competizione
+[805550]
+simhub = true
+acbridge = true
+kiosk-dash = #ACCDash
+
+# DiRT Rally 2.0
+[690790]
+simhub = true
+
+# American Truck Simulator
+[270880]
+simhub-same-prefix = true
+
+# Euro Truck Simulator 2
+[227300]
+simhub = true
+
+# Automobilista 2
+[1066890]
+simhub = true
+pc2bridge = true
+
+# Assetto Corsa Evo
+[2980600]
+opentrack = true
+simhub = true
+acbridge = true
+
+# Assetto Corsa Rally
+[3046480]
+opentrack = true
+simhub = true
+acbridge = true
+
+# BeamNG.drive
+[284160]
+simhub = true
+lookpilot = true
+
+# Wreckfest 2
+[1203190]
+simhub = true
+```
+
+With a config file, Steam launch options become just:
+
+`  ~/.local/bin/sim-launcher %command%   `
+
+All the per-game flags are read from the config automatically.
+
+Folders
+-------
 
 The launcher manages its own environment in ~/.local/share/sim-launcher:
 
