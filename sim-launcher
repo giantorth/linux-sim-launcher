@@ -287,9 +287,16 @@ class LauncherState:
     simhub_proc: Optional[Popen] = None
     monocoque_proc: Optional[Popen] = None
     lookpilot_proc: Optional[Popen] = None
+    cleanup_done: bool = False
 
 
 state = LauncherState()
+
+
+def _signal_handler(signum, frame):
+    """Convert SIGTERM into SystemExit so finally blocks run cleanup."""
+    info(f"Received {signal.Signals(signum).name}, shutting down...")
+    raise SystemExit(0)
 
 def send_kiosk_command(cmd: str, ip: str, password: str, port: str) -> Optional[dict]:
     """Send a command to Fully Kiosk Browser."""
@@ -975,21 +982,39 @@ def cleanup_shm_files() -> None:
             error(f"Failed to remove {shm_file}: {e}")
 
 
-def terminate_process(proc: Optional[Popen], name: str, timeout: int = 3) -> None:
-    """Terminate a process gracefully, then forcefully if needed."""
+def terminate_process(proc: Optional[Popen], name: str, timeout: int = 3, kill_group: bool = False) -> None:
+    """Terminate a process gracefully, then forcefully if needed.
+
+    Args:
+        kill_group: If True, send signals to the entire process group.
+                    Use for processes launched with start_new_session=True.
+    """
     if not proc:
         return
 
     try:
         if proc.poll() is None:
-            info(f"Terminating {name}...")
-            proc.terminate()
+            info(f"Terminating {name} (pid={proc.pid}, group={kill_group})...")
+            if kill_group:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except ProcessLookupError:
+                    info(f"{name} process group already gone")
+                    return
+            else:
+                proc.terminate()
             try:
                 proc.wait(timeout=timeout)
                 info(f"{name} terminated successfully")
             except subprocess.TimeoutExpired:
                 info(f"{name} didn't exit, force killing...")
-                proc.kill()
+                if kill_group:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
                 proc.wait()
         else:
             info(f"{name} already exited with code {proc.returncode}")
@@ -999,6 +1024,9 @@ def terminate_process(proc: Optional[Popen], name: str, timeout: int = 3) -> Non
 
 def perform_cleanup(args: argparse.Namespace) -> None:
     """Clean up all launched processes and resources."""
+    if state.cleanup_done:
+        return
+    state.cleanup_done = True
     info("Initiating global cleanup...")
 
     # Turn off Kiosk Browser
@@ -1041,16 +1069,23 @@ def perform_cleanup(args: argparse.Namespace) -> None:
 
     # Kill SimHub and Bridge processes (only if launched externally)
     if args.simhub and not args.simhub_same_prefix:
-        info("Terminating SimHub...")
-        try:
-            if kill_by_name("SimHubWPF.exe"):
-                info("SimHub terminated successfully")
-            else:
-                info("SimHub was not running or already terminated")
-        except Exception as e:
-            error(f"Error terminating SimHub: {e}")
+        terminate_process(state.simhub_proc, "SimHub", kill_group=True)
+        terminate_process(state.bridge_proc, "Proton Bridge", kill_group=True)
 
-        terminate_process(state.bridge_proc, "Proton Bridge")
+        # Fallback: kill by name in case handle-based cleanup missed children
+        try:
+            kill_by_name("SimHubWPF.exe")
+        except Exception as e:
+            error(f"Error terminating SimHub by name: {e}")
+
+        # Kill leftover Steam runtime wrappers spawned by protontricks for SimHub.
+        # These match "protontricks.App{appid}" which is unique to the SimHub
+        # prefix and won't affect the game's own Proton runtime.
+        if state.simhub_appid:
+            try:
+                kill_by_name(f"protontricks.App{state.simhub_appid}")
+            except Exception as e:
+                error(f"Error killing protontricks wrappers for SimHub: {e}")
     elif args.simhub and args.simhub_same_prefix:
         info("SimHub cleanup handled in game prefix")
 
@@ -1097,8 +1132,9 @@ def perform_cleanup(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     check7z()
-    makehome()
 
     # Setup simshmbridge if any bridge is requested or SimHub needs it
     needs_bridge = args.acbridge or args.pc2bridge or (args.simhub and not args.simhub_same_prefix)
@@ -1137,212 +1173,195 @@ def main() -> None:
         info("=== END DRY RUN ===")
         return
 
-    # Launch LookPilot
-    if args.lookpilot:
-        info("Launching LookPilot...")
-        try:
-            state.lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
-            info(f"LookPilot launched (PID: {state.lookpilot_proc.pid})")
-        except FileNotFoundError:
-            error("Failed to launch LookPilot: steam command not found")
-        except Exception as e:
-            error(f"Failed to launch LookPilot: {e}")
-
-    # Start ACSIMSHM (Native Linux) in its own process group
-    if args.acbridge:
-        info("Launching AC Bridge (Native)")
-        if not ACSIMSHM.is_file():
-            error(f"AC Bridge executable not found: {ACSIMSHM}")
-        else:
-            try:
-                state.ac_shm_proc = Popen(str(ACSIMSHM), start_new_session=True,
-                                          stdout=DEVNULL, stderr=DEVNULL)
-                info(f"AC Bridge launched (PID: {state.ac_shm_proc.pid})")
-                time.sleep(0.2)
-                if state.ac_shm_proc.poll() is not None:
-                    error(f"AC Bridge exited immediately with code {state.ac_shm_proc.returncode}")
-                    state.ac_shm_proc = None
-            except PermissionError:
-                error(f"Permission denied launching AC Bridge: {ACSIMSHM}")
-            except Exception as e:
-                error(f"Failed to launch AC Bridge: {e}")
-
-    # Start PC2SIMSHM (Native Linux) in its own process group
-    if args.pc2bridge:
-        info("Launching PC2 Bridge (Native)")
-        if not PC2SIMSHM.is_file():
-            error(f"PC2 Bridge executable not found: {PC2SIMSHM}")
-        else:
-            try:
-                state.pc2_shm_proc = Popen(str(PC2SIMSHM), start_new_session=True,
-                                           stdout=DEVNULL, stderr=DEVNULL)
-                info(f"PC2 Bridge launched (PID: {state.pc2_shm_proc.pid})")
-                time.sleep(0.2)
-                if state.pc2_shm_proc.poll() is not None:
-                    error(f"PC2 Bridge exited immediately with code {state.pc2_shm_proc.returncode}")
-                    state.pc2_shm_proc = None
-            except PermissionError:
-                error(f"Permission denied launching PC2 Bridge: {PC2SIMSHM}")
-            except Exception as e:
-                error(f"Failed to launch PC2 Bridge: {e}")
-
-    # Launch SimHub and Proton Bridge BEFORE the main game (only if NOT in same prefix)
+    # Shared protontricks setup for SimHub in separate prefix
+    pt_launcher = None
+    clean_env = None
     if args.simhub and simhubexec and not args.simhub_same_prefix:
         pt_launcher = which("protontricks-launch")
         if not pt_launcher:
             error("protontricks-launch not found - cannot launch SimHub in separate prefix")
         else:
-            try:
-                clean_env = os.environ.copy()
-                for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
-                    clean_env.pop(var, None)
+            clean_env = os.environ.copy()
+            for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
+                clean_env.pop(var, None)
 
-                info(f"Launching SimHub: {args.simhub_exe} (AppID: {state.simhub_appid})")
+    # Everything from here on needs cleanup if interrupted
+    try:
+        # Launch LookPilot
+        if args.lookpilot:
+            info("Launching LookPilot...")
+            try:
+                state.lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
+                info(f"LookPilot launched (PID: {state.lookpilot_proc.pid})")
+            except FileNotFoundError:
+                error("Failed to launch LookPilot: steam command not found")
+            except Exception as e:
+                error(f"Failed to launch LookPilot: {e}")
+
+        # Start ACSIMSHM (Native Linux) in its own process group
+        if args.acbridge:
+            info("Launching AC Bridge (Native)")
+            if not ACSIMSHM.is_file():
+                error(f"AC Bridge executable not found: {ACSIMSHM}")
+            else:
                 try:
-                    state.simhub_proc = Popen(
-                        [pt_launcher, "--appid", str(state.simhub_appid), str(simhubexec)],
+                    state.ac_shm_proc = Popen(str(ACSIMSHM), start_new_session=True,
+                                              stdout=DEVNULL, stderr=DEVNULL)
+                    info(f"AC Bridge launched (PID: {state.ac_shm_proc.pid})")
+                    time.sleep(0.2)
+                    if state.ac_shm_proc.poll() is not None:
+                        error(f"AC Bridge exited immediately with code {state.ac_shm_proc.returncode}")
+                        state.ac_shm_proc = None
+                except PermissionError:
+                    error(f"Permission denied launching AC Bridge: {ACSIMSHM}")
+                except Exception as e:
+                    error(f"Failed to launch AC Bridge: {e}")
+
+        # Start PC2SIMSHM (Native Linux) in its own process group
+        if args.pc2bridge:
+            info("Launching PC2 Bridge (Native)")
+            if not PC2SIMSHM.is_file():
+                error(f"PC2 Bridge executable not found: {PC2SIMSHM}")
+            else:
+                try:
+                    state.pc2_shm_proc = Popen(str(PC2SIMSHM), start_new_session=True,
+                                               stdout=DEVNULL, stderr=DEVNULL)
+                    info(f"PC2 Bridge launched (PID: {state.pc2_shm_proc.pid})")
+                    time.sleep(0.2)
+                    if state.pc2_shm_proc.poll() is not None:
+                        error(f"PC2 Bridge exited immediately with code {state.pc2_shm_proc.returncode}")
+                        state.pc2_shm_proc = None
+                except PermissionError:
+                    error(f"Permission denied launching PC2 Bridge: {PC2SIMSHM}")
+                except Exception as e:
+                    error(f"Failed to launch PC2 Bridge: {e}")
+
+        # Launch SimHub BEFORE the game (it's slow to start)
+        if args.simhub and simhubexec and not args.simhub_same_prefix and pt_launcher:
+            info(f"Launching SimHub: {args.simhub_exe} (AppID: {state.simhub_appid})")
+            try:
+                state.simhub_proc = Popen(
+                    [pt_launcher, "--appid", str(state.simhub_appid), str(simhubexec)],
+                    env=clean_env, start_new_session=True,
+                    stdout=DEVNULL, stderr=DEVNULL)
+                info(f"SimHub launched (PID: {state.simhub_proc.pid})")
+                info("Waiting for SimHub to initialize...")
+                time.sleep(10)
+            except Exception as e:
+                error(f"Failed to launch SimHub: {e}")
+                state.simhub_proc = None
+        elif args.simhub and simhubexec and args.simhub_same_prefix:
+            info("SimHub will be launched from batch script with delay before game starts")
+
+        # Prepare and launch the main game
+        final_argv = list(argv_original)
+        exe_found = False
+        for i in range(len(final_argv) - 1, -1, -1):
+            if final_argv[i].endswith(".exe"):
+                final_argv[i] = str(launcherscript)
+                exe_found = True
+                break
+
+        if not exe_found:
+            panic("Could not find executable in command line arguments")
+
+        info(f"Final execution command: {' '.join(final_argv[1:])}")
+        try:
+            state.main_game_proc = Popen(final_argv[1:])
+            info(f"Main game launched (PID: {state.main_game_proc.pid})")
+        except FileNotFoundError as e:
+            panic(f"Failed to launch game - command not found: {e}")
+        except Exception as e:
+            panic(f"Failed to launch main game: {e}")
+
+        # Launch Proton Bridge AFTER the game (needs the game's Proton running)
+        if args.simhub and simhubexec and not args.simhub_same_prefix and pt_launcher:
+            # Create hardlink for bridge
+            if state.proton_bridge and state.proton_bridge.exists():
+                state.proton_bridge.unlink()
+
+            bridge_source = ACSIMSHMBRIDGE if args.acbridge else (PC2SIMSHMBRIDGE if args.pc2bridge else DUMMYBRIDGE)
+            if not bridge_source.is_file():
+                error(f"Bridge source not found: {bridge_source}")
+            elif state.proton_bridge:
+                try:
+                    os.link(bridge_source, state.proton_bridge)
+                    info(f"Created bridge link: {state.proton_bridge}")
+                except OSError as e:
+                    error(f"Failed to create bridge hardlink: {e}")
+                    state.proton_bridge = None
+
+            if state.proton_bridge:
+                info(f"Launching Proton Bridge for SimHub: {state.proton_bridge}")
+                try:
+                    state.bridge_proc = Popen(
+                        [pt_launcher, "--appid", str(state.simhub_appid), str(state.proton_bridge)],
                         env=clean_env, start_new_session=True,
                         stdout=DEVNULL, stderr=DEVNULL)
-                    info(f"SimHub launched (PID: {state.simhub_proc.pid})")
-                    info("Waiting for SimHub to initialize...")
-                    time.sleep(10)
+                    info(f"Bridge launched (PID: {state.bridge_proc.pid})")
+                    time.sleep(1)
                 except Exception as e:
-                    error(f"Failed to launch SimHub: {e}")
-                    state.simhub_proc = None
+                    error(f"Failed to launch Proton Bridge: {e}")
+                    state.bridge_proc = None
 
-            except Exception as e:
-                error(f"Error setting up SimHub: {e}")
-
-    elif args.simhub and simhubexec and args.simhub_same_prefix:
-        info("SimHub will be launched from batch script with delay before game starts")
-
-    # Prepare and launch the main game
-    final_argv = list(argv_original)
-    exe_found = False
-    for i in range(len(final_argv) - 1, -1, -1):
-        if final_argv[i].endswith(".exe"):
-            final_argv[i] = str(launcherscript)
-            exe_found = True
-            break
-
-    if not exe_found:
-        panic("Could not find executable in command line arguments")
-
-    info(f"Final execution command: {' '.join(final_argv[1:])}")
-    try:
-        state.main_game_proc = Popen(final_argv[1:])
-        info(f"Main game launched (PID: {state.main_game_proc.pid})")
-    except FileNotFoundError as e:
-        panic(f"Failed to launch game - command not found: {e}")
-    except Exception as e:
-        panic(f"Failed to launch main game: {e}")
-
-    # Launch SimHub and Proton Bridge BEFORE the main game (only if NOT in same prefix)
-    if args.simhub and simhubexec and not args.simhub_same_prefix:
-        pt_launcher = which("protontricks-launch")
-        if not pt_launcher:
-            error("protontricks-launch not found - cannot launch SimHub in separate prefix")
-        else:
+        # Turn on Kiosk Browser
+        if args.kiosk_ip and args.kiosk_pw:
+            info("Turning on kiosk tablet screen")
             try:
-                clean_env = os.environ.copy()
-                for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
-                    clean_env.pop(var, None)
-
-                # Create hardlink for bridge
-                if state.proton_bridge and state.proton_bridge.exists():
-                    state.proton_bridge.unlink()
-
-                bridge_source = ACSIMSHMBRIDGE if args.acbridge else (PC2SIMSHMBRIDGE if args.pc2bridge else DUMMYBRIDGE)
-                if not bridge_source.is_file():
-                    error(f"Bridge source not found: {bridge_source}")
-                elif state.proton_bridge:
-                    try:
-                        os.link(bridge_source, state.proton_bridge)
-                        info(f"Created bridge link: {state.proton_bridge}")
-                    except OSError as e:
-                        error(f"Failed to create bridge hardlink: {e}")
-                        state.proton_bridge = None
-
-                if state.proton_bridge:
-                    info(f"Launching Proton Bridge for SimHub: {state.proton_bridge}")
-                    try:
-                        state.bridge_proc = Popen(
-                            [pt_launcher, "--appid", str(state.simhub_appid), str(state.proton_bridge)],
-                            env=clean_env, start_new_session=True,
-                            stdout=DEVNULL, stderr=DEVNULL)
-                        info(f"Bridge launched (PID: {state.bridge_proc.pid})")
-                        time.sleep(1)
-                    except Exception as e:
-                        error(f"Failed to launch Proton Bridge: {e}")
-                        state.bridge_proc = None
-
+                result = screen_on(args)
+                if result:
+                    info("Kiosk screen turned on successfully")
+                else:
+                    error("Failed to turn on kiosk screen")
             except Exception as e:
-                error(f"Error setting up Bridge: {e}")
+                error(f"Error turning on kiosk screen: {e}")
 
-    elif args.simhub and simhubexec and args.simhub_same_prefix:
-        info("SimHub will be launched from batch script with delay before game starts")
+        # Launch Monocoque
+        if args.monocoque:
+            info("Launching Monocoque")
+            try:
+                state.monocoque_proc = Popen(
+                    ["monocoque", "play"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1)
 
-    # Turn on Kiosk Browser
-    if args.kiosk_ip and args.kiosk_pw:
-        info("Turning on kiosk tablet screen")
-        try:
-            result = screen_on(args)
-            if result:
-                info("Kiosk screen turned on successfully")
-            else:
-                error("Failed to turn on kiosk screen")
-        except Exception as e:
-            error(f"Error turning on kiosk screen: {e}")
+                time.sleep(0.5)
 
-    # Launch Monocoque
-    if args.monocoque:
-        info("Launching Monocoque")
-        try:
-            state.monocoque_proc = Popen(
-                ["monocoque", "play"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1)
-
-            time.sleep(0.5)
-
-            if state.monocoque_proc.poll() is not None:
-                error(f"Monocoque exited immediately with code {state.monocoque_proc.returncode}")
+                if state.monocoque_proc.poll() is not None:
+                    error(f"Monocoque exited immediately with code {state.monocoque_proc.returncode}")
+                    state.monocoque_proc = None
+                else:
+                    info(f"Monocoque started successfully (PID: {state.monocoque_proc.pid})")
+            except FileNotFoundError:
+                error("Failed to launch Monocoque: monocoque command not found")
                 state.monocoque_proc = None
-            else:
-                info(f"Monocoque started successfully (PID: {state.monocoque_proc.pid})")
-        except FileNotFoundError:
-            error("Failed to launch Monocoque: monocoque command not found")
-            state.monocoque_proc = None
-        except Exception as e:
-            error(f"Failed to launch Monocoque: {e}")
-            state.monocoque_proc = None
+            except Exception as e:
+                error(f"Failed to launch Monocoque: {e}")
+                state.monocoque_proc = None
 
-    # Wait for main game to exit
-    try:
+        # Wait for main game to exit
         info("Waiting for main game to exit...")
         state.main_game_proc.wait()
         info(f"Main game exited with code {state.main_game_proc.returncode}")
-    except KeyboardInterrupt:
-        info("Shutdown requested via keyboard...")
-        try:
+
+    except (KeyboardInterrupt, SystemExit):
+        info("Shutdown requested, terminating main game...")
+        if state.main_game_proc and state.main_game_proc.poll() is None:
             state.main_game_proc.terminate()
-            info("Sent termination signal to main game")
-            state.main_game_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            info("Main game didn't exit, force killing...")
-            state.main_game_proc.kill()
-        except Exception as e:
-            error(f"Error terminating main game: {e}")
+            try:
+                state.main_game_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                info("Main game didn't exit, force killing...")
+                state.main_game_proc.kill()
     except Exception as e:
-        error(f"Error waiting for main game: {e}")
+        error(f"Error during execution: {e}")
     finally:
         info("Main game closed.")
         perform_cleanup(args)
-
-    info("Cleanup complete. Exiting.")
+        info("Cleanup complete. Exiting.")
 
 
 if __name__ == '__main__':

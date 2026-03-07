@@ -10,7 +10,7 @@ Key Features
 
 *   **Auto-updating Opentrack:** Automatically fetches and extracts the latest portable Windows version.
 
-*   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks.
+*   **SimHub Integration:** Launches SimHub into its own specific Steam AppID prefix using protontricks. The AppID is auto-detected from Steam's `shortcuts.vdf` -- no manual configuration needed.
 
 *   **Monocoque**: Launch Monocoque with the game.
 
@@ -20,10 +20,12 @@ Key Features
 
 *   **LookPilot Support:** Toggle-able launch for LookPilot (AppID 3326890).
 
-*   **Fully Kiosk Browser Integration:** Automatically turn tablet screens on/off via Fully Kiosk Browser REST API.  
+*   **Fully Kiosk Browser Integration:** Automatically turn tablet screens on/off via Fully Kiosk Browser REST API.
+
+*   **Flatpak Support:** Automatically detects and works with Flatpak Steam installations.
 
 *   **Automatic Cleanup:** When the main game closes, the script automatically kills all associated .exe processes and native bridges.
-    
+
 
 Dependencies
 ------------
@@ -31,6 +33,8 @@ Dependencies
 *   **p7zip** (installed as 7z or 7za) - Required for extracting Opentrack.
 
 *   **python3** - The core runner.
+
+*   **python-vdf** - Required for Steam library and shortcut discovery.
 
 *   **python-requests** - Required for Fully Kiosk Browser integration.
 
@@ -56,24 +60,22 @@ $ sudo wget https://raw.githubusercontent.com/giantorth/linux-sim-launcher/maste
 
 * If you don't have it, install protontricks from your distro's package repo.
 
-* Install simhub in it's own Steam prefix:
+* Install simhub in its own Steam prefix:
 
-    1. Add the SimHub installer to Steam as a **non-steam game** 
+    1. Add the SimHub installer to Steam as a **non-steam game**
     2. Edit the properties to set compatability options to a GE-Proton (better dotnet compatability)
     3. Run the SimHub installer and **make sure to uncheck** "Install Microsoft redistributables" and "Install USB display drivers" (they don't work on linux)
-    4. Locate the appid for this new prefix (Tell steam to add it as a desktop shortcut and inspect the properties for the ID)
-    5. Install dotnet48 in this prefix (Replace ID_OF_SIMHUB with correct value)
+    4. Install dotnet48 in this prefix (the AppID is auto-detected, but you can find it by adding a desktop shortcut in Steam and inspecting its properties)
 
     ```bash
     $ WINEPREFIX=~/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx winetricks -q --force dotnet48
     ```
-    6. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
-    7. Ensure SimHub launches correctly from Steam
-    8. Edit the script parser arguments to add your unique SimHub appid as the default (if desired)
+    5. Edit the properties in Steam and browse to the correct executable (be sure to add quotes if Steam doesnt) example path: `"/home/USERNAME/.steam/steam/steamapps/compatdata/ID_OF_SIMHUB/pfx/drive_c/Program Files (x86)/SimHub/SimHubWPF.exe"`
+    6. Ensure SimHub launches correctly from Steam
 
 Potential Issues
 ----------------
-* Some games require additional configuration to support SimHub.  Normally SimHub would configure this automatically for you but is unable to when running in it's own prefix.  Either look up instructions on how to manually configure the game, or follow [these directions](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) to install a demo copy in a game's prefix so it is able to auto-configure the game for you.
+* Some games require additional configuration to support SimHub.  Normally SimHub would configure this automatically for you but is unable to when running in its own prefix.  Either look up instructions on how to manually configure the game, or follow [these directions](https://gist.github.com/srlemke/617fe318ea26fed4cbd2edaec9209c86) to install a demo copy in a game's prefix so it is able to auto-configure the game for you.
 * Simhub seemingly struggles to launch minimized if the game is already running in full screen.  Alt-tab until SimHub has launched.
 * If the game exits abnormally, you may have leftover .exe programs running in your prefixes that must be killed manually
 
@@ -82,9 +84,9 @@ Usage in Steam
 --------------
 
 1.  Right-click your desired game in Steam -> **Properties**.
-    
+
 2.  In the **Launch Options** field, enter the command below.
-    
+
 
 ### Basic Usage
 
@@ -103,17 +105,28 @@ You can append flags to the launcher to enable specific tools:
 |---|---|
 | --opentrack | Download (if needed) and launch Opentrack. |
 | --simhub | Launch SimHub from its own Proton prefix. |
+| --simhub-same-prefix | Launch Simhub from the same prefix as the game, must already be installed. |
 | --monocoque | Launch Monocoque. |
 | --acbridge | Launch the Assetto Corsa (AC/ACE/ACR) Shared Memory Bridge. |
 | --pc2bridge | Launch the Project Cars 2 (Automobilista 2) Shared Memory Bridge. |
 | --lookpilot | Launch LookPilot via Steam. |
-| --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
-| --simhub-appid | Set the Steam AppID for the SimHub prefix (Default: 2825720939). |
-| --simhub-pfx | Path to your Steam compatdata folder. |
-| --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
-| --simhub-same-prefix | Launch Simhub from the same prefix as the game, must already be installed |
 | --kiosk-ip | Set the IP address of a Fully Kiosk Browser for automatic screen sleep/wake. |
-| --kiosk-pw | Set the admin password for the Fully Kiosk Browser (required with --kiosk-ip). |
+| --kiosk-pw | Set the admin password of the Fully Kiosk Browser (required with --kiosk-ip). |
+| --kiosk-port | Set the port for Fully Kiosk Browser (Default: 2323). |
+| --debug | Enable verbose logging to file in ~/.local/share/sim-launcher. |
+| --dry-run | Show what would be launched without executing. |
+| --clean-shm | Clean up shared memory files after AC bridge exits. |
+| --version | Show version number and exit. |
+
+### Optional overrides
+
+These flags are rarely needed since the launcher auto-detects SimHub's AppID from Steam's `shortcuts.vdf` and resolves paths via Steam library discovery.
+
+| Flag | Description |
+|---|---|
+| --simhub-appid | Override the Steam AppID for the SimHub prefix. |
+| --simhub-pfx | Override the path to your Steam compatdata folder. |
+| --simhub-exe | The name of the SimHub executable (Default: SimHubWPF.exe). |
 
 **Example setup:**
 
@@ -136,9 +149,9 @@ The launcher manages its own environment in ~/.local/share/sim-launcher:
    ├── simshmbridge/           # Auto-cloned and built simshmbridge repository (when using bridge flags)
    │   └── assets/             # Compiled bridge executables (acshm, acbridge.exe, pcars2shm, pcars2bridge.exe, etc.)
    ├── opentrack-version.txt   # Tracks installed Opentrack version for updates
-   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used)
+   └── log_YYYYMMDD.log        # Debug logs (only created if --debug is used, last 5 kept)
 ```
-    
+
 
 How it Works
 ------------
@@ -147,8 +160,10 @@ How it Works
 
 2.  **Auto-Setup:** When bridge flags are used for the first time, simshmbridge is automatically cloned from GitHub and built with the necessary dependencies.
 
-3.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
+3.  **SimHub Discovery:** SimHub's AppID is automatically located by scanning Steam's `shortcuts.vdf` for non-Steam game entries containing "SimHub". The compatdata path is resolved via Steam library discovery.
 
-4.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
+4.  **Environment:** It creates a .bat script that Windows/Proton understands to launch the game and the tools together.
 
-5.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
+5.  **Bridges:** It handles the symlinking and execution of the AC/PC2 Bridge between the Linux environment and the Wine prefix.
+
+6.  **Cleanup:** It uses pkill and os.killpg to ensure no "zombie" processes (like opentrack.exe or acbridge.exe) stay running after you quit the game.
