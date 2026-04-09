@@ -36,7 +36,7 @@ Dependencies
 
 *   **python-vdf** - Required for Steam library and shortcut discovery.
 
-*   **python-requests** - Required for Fully Kiosk Browser integration.
+*   **python-requests** - Required for OpenTrack downloads and Fully Kiosk Browser integration.
 
 *   **protontricks** - Required for launching SimHub and the Proton Bridge.
 
@@ -46,6 +46,18 @@ Dependencies
 
 Installation
 ------------
+
+* Install the Python dependencies:
+
+```bash
+pip install -r https://raw.githubusercontent.com/giantorth/linux-sim-launcher/master/requirements.txt
+```
+
+Or if you've already downloaded the script:
+
+```bash
+pip install requests vdf
+```
 
 * Open a terminal and choose one of the following methods to install this script:
 
