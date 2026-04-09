@@ -194,7 +194,7 @@ simhub = true
 acbridge = true
 
 # Assetto Corsa Rally
-[3046480]
+[3917090]
 opentrack = true
 simhub = true
 acbridge = true

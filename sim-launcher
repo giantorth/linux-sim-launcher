@@ -10,17 +10,16 @@ import json
 import logging
 import os
 import signal
+import struct
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from shutil import which, rmtree
 from subprocess import Popen, PIPE, DEVNULL
-from sys import argv, stdout
+from sys import argv, stdout, stderr
 from typing import Optional, NoReturn
-from urllib.error import URLError
-from urllib.request import urlopen, urlretrieve
 
 import requests
 import vdf
@@ -29,15 +28,18 @@ VERSION = "1.1.0"
 
 
 # --- Steam Library Discovery ---
-def get_steam_libraries() -> list[Path]:
-    """Get all Steam library paths from libraryfolders.vdf."""
+def _get_libraryfolders_vdf() -> Path:
+    """Get the path to Steam's libraryfolders.vdf, with Flatpak support."""
     vdf_path = Path.home() / ".local/share/Steam/config/libraryfolders.vdf"
-
-    # Also check Flatpak location
     flatpak_vdf = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"
     if Path("/.flatpak-info").is_file() and flatpak_vdf.is_file():
-        vdf_path = flatpak_vdf
+        return flatpak_vdf
+    return vdf_path
 
+
+def get_steam_libraries() -> list[Path]:
+    """Get all Steam library paths from libraryfolders.vdf."""
+    vdf_path = _get_libraryfolders_vdf()
     libraries = []
 
     if not vdf_path.is_file():
@@ -69,11 +71,7 @@ def get_steam_libraries() -> list[Path]:
 
 def find_library_for_appid(appid: str) -> Optional[Path]:
     """Find which Steam library contains a given AppID."""
-    vdf_path = Path.home() / ".local/share/Steam/config/libraryfolders.vdf"
-
-    flatpak_vdf = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/libraryfolders.vdf"
-    if Path("/.flatpak-info").is_file() and flatpak_vdf.is_file():
-        vdf_path = flatpak_vdf
+    vdf_path = _get_libraryfolders_vdf()
 
     if not vdf_path.is_file():
         return None
@@ -122,8 +120,6 @@ def find_simhub_appid() -> Optional[str]:
     generated AppIDs. This function searches for SimHub entries and
     extracts the AppID.
     """
-    import struct
-
     # Determine Steam userdata path
     if Path("/.flatpak-info").is_file():
         userdata_path = Path.home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam/userdata"
@@ -227,7 +223,7 @@ def panic(msg: str) -> NoReturn:
     if log:
         log.critical(msg)
     else:
-        print(f"[sim-launcher] CRITICAL: {msg}", file=stdout)
+        print(f"[sim-launcher] CRITICAL: {msg}", file=stderr)
     exit(-1)
 
 
@@ -236,7 +232,7 @@ def error(msg: str) -> None:
     if log:
         log.error(msg)
     else:
-        print(f"[sim-launcher] ERROR: {msg}", file=stdout)
+        print(f"[sim-launcher] ERROR: {msg}", file=stderr)
 
 
 def info(msg: str) -> None:
@@ -247,17 +243,10 @@ def info(msg: str) -> None:
         print(f"[sim-launcher] INFO: {msg}", file=stdout)
 
 
-def getenv(name: str, default: Optional[str] = None) -> str:
-    """Get environment variable or panic if not found and no default."""
-    try:
-        return os.environ[name]
-    except KeyError:
-        if default is not None:
-            return default
-        panic("environment variable " + name + " not found")
-
 APPIDSIG = "AppId="
-APPHOME = Path(getenv("HOME")) if not Path("/.flatpak-info").is_file() else Path(getenv("HOME")) / ".var/app/com.valvesoftware.Steam"
+LOOKPILOT_APPID = "3326890"
+AC_APPID = "244210"
+APPHOME = Path.home() if not Path("/.flatpak-info").is_file() else Path.home() / ".var/app/com.valvesoftware.Steam"
 LAUNCHERHOME = APPHOME / ".local/share/sim-launcher"
 OPENTRACKURL = "http://api.github.com/repos/opentrack/opentrack/releases/latest"
 SIMHUBURL = "https://github.com/SHWotever/SimHub/releases/tag/latest"
@@ -317,7 +306,7 @@ EXAMPLE_CONFIG = """\
 # acbridge = true
 
 ## Assetto Corsa Rally
-# [3046480]
+# [3917090]
 # opentrack = true
 # simhub = true
 # acbridge = true
@@ -350,9 +339,9 @@ EXAMPLE_CONFIG = """\
 """
 
 
-def _find_appid_early() -> Optional[str]:
-    """Extract AppID from sys.argv before argument parsing."""
-    for arg in argv:
+def _find_appid_in_args(args_list: list[str]) -> Optional[str]:
+    """Extract AppID from a list of command line arguments."""
+    for arg in args_list:
         if APPIDSIG in arg:
             return arg[len(APPIDSIG):]
     return None
@@ -508,64 +497,69 @@ def load_kiosk_url(args: argparse.Namespace) -> Optional[dict]:
                               extra_params={"url": url})
 
 
-# Command line arguments
-parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
-parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
-parser.add_argument('--opentrack', action='store_true', help='Launch OpenTrack')
-parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
-parser.add_argument('--simhub-pfx', type=Path, help='Path to Steam compatdata (auto-detected if not specified)')
-parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
-parser.add_argument('--simhub-appid', default=None, help='SimHub Steam AppID (auto-detected if not specified)')
-parser.add_argument('--simhub-same-prefix', action='store_true', help='Launch SimHub in the same prefix as the game')
-parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
-parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
-parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
-parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
-parser.add_argument('--kiosk-ip', dest='kiosk_ip', help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
-parser.add_argument('--kiosk-pw', dest='kiosk_pw', help="Set the admin password of a Fully Kiosk Browser for automatic sleep/wake")
-parser.add_argument('--kiosk-port', dest='kiosk_port', default=DEFAULT_KIOSK_PORT, help=f"Fully Kiosk Browser port (default: {DEFAULT_KIOSK_PORT})")
-parser.add_argument('--kiosk-url', dest='kiosk_url', help="Base SimHub dashboard URL (e.g., http://10.0.1.48:8888/)")
-parser.add_argument('--kiosk-dash', dest='kiosk_dash', help="Dashboard fragment to append to kiosk URL (e.g., #ControlCenter)")
-parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
-parser.add_argument('--dry-run', action='store_true', help='Show what would be launched without executing')
-parser.add_argument('--clean-shm', action='store_true', help='Clean up shared memory files after AC bridge exits')
-# Load config: [options] globals merged with [<appid>] overrides (CLI args override all)
-_early_appid = _find_appid_early()
-_loaded_config = load_config(_early_appid)
-if _loaded_config:
-    parser.set_defaults(**_loaded_config)
+# These globals are initialized by _init() called from main()
+args: Optional[argparse.Namespace] = None
+argv_original: list[str] = []
 
-args, unknown_args = parser.parse_known_args()
 
-# simhub-same-prefix implies simhub
-if args.simhub_same_prefix:
-    args.simhub = True
+def _init() -> None:
+    """Parse arguments, load config, and set up logging. Must be called from main()."""
+    global args, argv_original, log
 
-# Ensure launcher home exists before logging setup
-LAUNCHERHOME.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description='Launch Steam games with optional OpenTrack and SimHub')
+    parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
+    parser.add_argument('--opentrack', action='store_true', help='Launch OpenTrack')
+    parser.add_argument('--simhub', action='store_true', help='Launch SimHub')
+    parser.add_argument('--simhub-pfx', type=Path, help='Path to Steam compatdata (auto-detected if not specified)')
+    parser.add_argument('--simhub-exe', default="SimHubWPF.exe", help='SimHub executable name')
+    parser.add_argument('--simhub-appid', default=None, help='SimHub Steam AppID (auto-detected if not specified)')
+    parser.add_argument('--simhub-same-prefix', action='store_true', help='Launch SimHub in the same prefix as the game')
+    parser.add_argument('--monocoque', action='store_true', help='Launch Monocoque')
+    parser.add_argument('--lookpilot', action='store_true', help='Launch LookPilot (Steam AppID: 3326890)')
+    parser.add_argument('--acbridge', action='store_true', help='Launch AC/ACC/ACE/ACR bridge')
+    parser.add_argument('--pc2bridge', action='store_true', help='Launch Project Cars 2/Automobilista 2 bridge')
+    parser.add_argument('--kiosk-ip', dest='kiosk_ip', help="Set the IP of a Fully Kiosk Browser for automatic sleep/wake")
+    parser.add_argument('--kiosk-pw', dest='kiosk_pw', help="Set the admin password of a Fully Kiosk Browser for automatic sleep/wake")
+    parser.add_argument('--kiosk-port', dest='kiosk_port', default=DEFAULT_KIOSK_PORT, help=f"Fully Kiosk Browser port (default: {DEFAULT_KIOSK_PORT})")
+    parser.add_argument('--kiosk-url', dest='kiosk_url', help="Base SimHub dashboard URL (e.g., http://10.0.1.48:8888/)")
+    parser.add_argument('--kiosk-dash', dest='kiosk_dash', help="Dashboard fragment to append to kiosk URL (e.g., #ControlCenter)")
+    parser.add_argument('--debug', action='store_true', help='Log output to log_timestamp.log in program folder')
+    parser.add_argument('--dry-run', action='store_true', help='Show what would be launched without executing')
+    parser.add_argument('--clean-shm', action='store_true', help='Clean up shared memory files after AC bridge exits')
 
-# Initialize Logger
-log = setup_logging(args.debug, LAUNCHERHOME)
+    # Load config: [options] globals merged with [<appid>] overrides (CLI args override all)
+    early_appid = _find_appid_in_args(argv)
+    loaded_config = load_config(early_appid)
+    if loaded_config:
+        parser.set_defaults(**loaded_config)
 
-# Log config file usage
-if _loaded_config:
-    sections = "[options]"
-    if _early_appid:
-        sections += f" + [{_early_appid}]"
-    info(f"Loaded config from {CONFIG_FILE} ({sections})")
+    args, unknown_args = parser.parse_known_args()
 
-# Restore original argv for Steam compatibility
-argv_original = argv[:1] + unknown_args
+    # simhub-same-prefix implies simhub
+    if args.simhub_same_prefix:
+        args.simhub = True
 
-def findappid() -> str:
+    # Ensure launcher home exists before logging setup
+    LAUNCHERHOME.mkdir(parents=True, exist_ok=True)
+
+    # Initialize Logger
+    log = setup_logging(args.debug, LAUNCHERHOME)
+
+    # Log config file usage
+    if loaded_config:
+        sections = "[options]"
+        if early_appid:
+            sections += f" + [{early_appid}]"
+        info(f"Loaded config from {CONFIG_FILE} ({sections})")
+
+    # Restore original argv for Steam compatibility
+    argv_original = argv[:1] + unknown_args
+
+def find_appid() -> str:
     """Find Steam AppID from command line arguments."""
-    appid = ""
-    for arg in argv_original:
-        if APPIDSIG in arg:
-            appid = arg[len(APPIDSIG):]
-            break
+    appid = _find_appid_in_args(argv_original)
 
-    if appid == "":
+    if not appid:
         error("appid not found in arguments, falling back to executable name")
         if len(argv_original) > 0:
             appid = argv_original[-1]
@@ -580,53 +574,53 @@ def findappid() -> str:
     return appid
 
 
-def isnewer(ver: str) -> bool:
+def is_newer(ver: str) -> bool:
     """Check if version is newer than the stored version."""
-    versionfile = LAUNCHERHOME / "opentrack-version.txt"
+    version_file = LAUNCHERHOME / "opentrack-version.txt"
     try:
-        if not versionfile.is_file():
-            versionfile.write_text(ver)
+        if not version_file.is_file():
             return True
-        fver = versionfile.read_text().strip()
+        fver = version_file.read_text().strip()
         return fver != ver
     except IOError as e:
-        error(f"Error reading/writing version file {versionfile}: {e}")
+        error(f"Error reading version file {version_file}: {e}")
         return True
     except Exception as e:
         error(f"Unexpected error checking version: {e}")
         return True
 
 
-def updateversionfile(ver: str) -> None:
+def update_version_file(ver: str) -> None:
     """Update the stored opentrack version."""
-    versionfile = LAUNCHERHOME / "opentrack-version.txt"
+    version_file = LAUNCHERHOME / "opentrack-version.txt"
     try:
-        versionfile.write_text(ver)
+        version_file.write_text(ver)
     except IOError as e:
-        error(f"Failed to update version file {versionfile}: {e}")
+        error(f"Failed to update version file {version_file}: {e}")
     except Exception as e:
         error(f"Unexpected error updating version file: {e}")
 
 
-def removeversionfile() -> None:
+def remove_version_file() -> None:
     """Remove the version file to force re-download."""
-    versionfile = LAUNCHERHOME / "opentrack-version.txt"
+    version_file = LAUNCHERHOME / "opentrack-version.txt"
     try:
-        if versionfile.is_file():
-            versionfile.unlink()
-            info(f"Removed version file: {versionfile}")
+        if version_file.is_file():
+            version_file.unlink()
+            info(f"Removed version file: {version_file}")
     except PermissionError as e:
-        error(f"Permission denied removing version file {versionfile}: {e}")
+        error(f"Permission denied removing version file {version_file}: {e}")
     except Exception as e:
-        error(f"Failed to remove version file {versionfile}: {e}")
+        error(f"Failed to remove version file {version_file}: {e}")
 
-def dlopentrack() -> None:
+def download_opentrack() -> None:
     """Download and install/update OpenTrack if needed."""
     info("checking if opentrack is up to date...")
     try:
-        content = urlopen(OPENTRACKURL).read().decode("UTF-8")
-        latest = json.loads(content)
-    except URLError as e:
+        response = requests.get(OPENTRACKURL, timeout=15)
+        response.raise_for_status()
+        latest = response.json()
+    except requests.exceptions.RequestException as e:
         error(f"Network error fetching opentrack release manifest: {e}")
         return
     except json.JSONDecodeError as e:
@@ -642,30 +636,34 @@ def dlopentrack() -> None:
         error(f"Invalid opentrack release manifest format: {e}")
         return
 
-    if isnewer(version):
+    if is_newer(version):
         info(f"Downloading the latest opentrack version: {version}")
         try:
             for asset in latest["assets"]:
                 if asset["name"].endswith("portable.7z"):
-                    opentrackark = LAUNCHERHOME / "opentrack.7z"
+                    opentrack_archive = LAUNCHERHOME / "opentrack.7z"
                     info(f"Downloading from: {asset['browser_download_url']}")
-                    urlretrieve(asset["browser_download_url"], opentrackark)
+                    dl = requests.get(asset["browser_download_url"], timeout=120, stream=True)
+                    dl.raise_for_status()
+                    with open(opentrack_archive, "wb") as f:
+                        for chunk in dl.iter_content(chunk_size=8192):
+                            f.write(chunk)
 
-                    opentrackinstall = LAUNCHERHOME / "install"
-                    if opentrackinstall.is_dir():
+                    opentrack_install = LAUNCHERHOME / "install"
+                    if opentrack_install.is_dir():
                         info("Removing old opentrack installation")
-                        rmtree(opentrackinstall)
+                        rmtree(opentrack_install)
 
                     info("Extracting opentrack archive...")
-                    err = Popen([state.zip_binary, "x", "-aoa", "-o" + str(LAUNCHERHOME), str(opentrackark)],
+                    err = Popen([state.zip_binary, "x", "-aoa", "-o" + str(LAUNCHERHOME), str(opentrack_archive)],
                                cwd=LAUNCHERHOME).wait()
 
-                    if opentrackark.is_file():
-                        opentrackark.unlink()
+                    if opentrack_archive.is_file():
+                        opentrack_archive.unlink()
 
                     if err != 0:
                         error(f"Failed to extract opentrack archive (exit code: {err})")
-                        removeversionfile()
+                        remove_version_file()
                         return
 
                     info("OpenTrack installation complete")
@@ -673,44 +671,44 @@ def dlopentrack() -> None:
             else:
                 error("No portable.7z asset found in opentrack release")
                 return
-        except URLError as e:
+        except requests.exceptions.RequestException as e:
             error(f"Failed to download opentrack: {e}")
-            removeversionfile()
+            remove_version_file()
             return
         except IOError as e:
             error(f"File I/O error during opentrack installation: {e}")
-            removeversionfile()
+            remove_version_file()
             return
         except Exception as e:
             error(f"Unexpected error installing opentrack: {e}")
-            removeversionfile()
+            remove_version_file()
             return
     else:
         info(f"OpenTrack is up to date (version: {version})")
 
-    updateversionfile(version)
+    update_version_file(version)
 
-def getopentrack() -> Optional[Path]:
+def get_opentrack() -> Optional[Path]:
     """Get OpenTrack executable path, downloading if needed."""
     if not args.opentrack:
         return None
 
     try:
-        dlopentrack()
+        download_opentrack()
     except Exception as e:
         error(f"Error setting up opentrack: {e}")
         return None
 
-    opentrackexec = LAUNCHERHOME / "install/opentrack.exe"
-    if opentrackexec.is_file():
-        info(f"OpenTrack executable found: {opentrackexec}")
-        return opentrackexec
+    opentrack_exec = LAUNCHERHOME / "install/opentrack.exe"
+    if opentrack_exec.is_file():
+        info(f"OpenTrack executable found: {opentrack_exec}")
+        return opentrack_exec
     else:
-        error(f"OpenTrack executable not found at: {opentrackexec}")
+        error(f"OpenTrack executable not found at: {opentrack_exec}")
         return None
 
 
-def getsimhub(game_appid: str) -> Optional[Path]:
+def get_simhub(game_appid: str) -> Optional[Path]:
     """Get SimHub executable path."""
     if not args.simhub:
         return None
@@ -779,13 +777,13 @@ def getsimhub(game_appid: str) -> Optional[Path]:
         return None
 
 
-def towinepath(p: Optional[Path]) -> str:
+def to_wine_path(p: Optional[Path]) -> str:
     """Convert a Unix path to a Wine Z: drive path."""
     if p is None:
         return ""
     return "Z:" + str(p.resolve()).replace("/", "\\")
 
-def findappcmdline() -> str:
+def find_app_cmdline() -> str:
     """Extract the application command line from arguments."""
     cmdline = ""
     exe_found = False
@@ -803,7 +801,7 @@ def findappcmdline() -> str:
     return result
 
 
-def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optional[Path]) -> Path:
+def get_launch_script(appid: str, opentrack_exec: Optional[Path], simhub_exec: Optional[Path]) -> Path:
     """Generate the Windows batch script to launch the game and supporting apps."""
     scripts = LAUNCHERHOME / "scripts"
     try:
@@ -812,19 +810,19 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
         panic(f"Failed to create scripts directory {scripts}: {e}")
     script = scripts / f"{appid}.bat"
 
-    appcmdline = findappcmdline()
+    app_cmdline = find_app_cmdline()
     try:
-        appsplitindex = appcmdline.index(".exe") + len(".exe")
-        appexec = Path(appcmdline[:appsplitindex])
-        appargs = appcmdline[appsplitindex:]
-        app_exe_name = appexec.name
+        app_split_index = app_cmdline.index(".exe") + len(".exe")
+        app_exec = Path(app_cmdline[:app_split_index])
+        app_args = app_cmdline[app_split_index:]
+        app_exe_name = app_exec.name
     except ValueError:
-        panic(f"Could not parse .exe from command line: {appcmdline}")
+        panic(f"Could not parse .exe from command line: {app_cmdline}")
     except Exception as e:
         panic(f"Error parsing command line: {e}")
 
     # Proton bridge fixes for specific games with launchers
-    if appid == "244210":
+    if appid == AC_APPID:
         bridge_name = "acs.exe"
     elif app_exe_name == "RSF_Launcher.exe":
         bridge_name = "RichardBurnsRally_SSE.exe"
@@ -833,32 +831,32 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
 
     state.proton_bridge = SIMSHM / bridge_name
 
-    appwine = towinepath(appexec)
-    opentrackwine = towinepath(opentrackexec)
-    acbridgewine = towinepath(ACSIMSHMBRIDGE)
-    pc2bridgewine = towinepath(PC2SIMSHMBRIDGE)
-    simhubwine = towinepath(simhubexec) if simhubexec and args.simhub_same_prefix else None
+    app_wine = to_wine_path(app_exec)
+    opentrack_wine = to_wine_path(opentrack_exec)
+    ac_bridge_wine = to_wine_path(ACSIMSHMBRIDGE)
+    pc2_bridge_wine = to_wine_path(PC2SIMSHMBRIDGE)
+    simhub_wine = to_wine_path(simhub_exec) if simhub_exec and args.simhub_same_prefix else None
 
     lines = []
 
     if args.acbridge:
-        lines.append(f"start \"\" \"{acbridgewine}\"\r\n")
+        lines.append(f"start \"\" \"{ac_bridge_wine}\"\r\n")
 
     if args.pc2bridge:
-        lines.append(f"start \"\" \"{pc2bridgewine}\"\r\n")
+        lines.append(f"start \"\" \"{pc2_bridge_wine}\"\r\n")
 
-    if opentrackexec:
-        lines.append(f"start \"\" \"{opentrackwine}\"\r\n")
+    if opentrack_exec:
+        lines.append(f"start \"\" \"{opentrack_wine}\"\r\n")
 
     # Launch SimHub if it's in the same prefix
-    if simhubwine:
-        lines.append(f"start \"\" \"{simhubwine}\"\r\n")
+    if simhub_wine:
+        lines.append(f"start \"\" \"{simhub_wine}\"\r\n")
         lines.append("ping -n 6 127.0.0.1 >nul\r\n")  # ~5 second delay for SimHub to initialize
 
     # 2. Launch Logic (Conditional on pc2bridge)
     if args.pc2bridge:
         # ASYNC Launch for AMS2/PCars2
-        lines.append(f"start \"\" \"{appwine}\" {appargs}\r\n")
+        lines.append(f"start \"\" \"{app_wine}\" {app_args}\r\n")
         # Apparently no pause.exe in wine?
         lines.append("ping -n 7 127.0.0.1 >nul\r\n")
         
@@ -878,16 +876,16 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
         lines.append("if %STILL_RUNNING% EQU 1 goto LOOP\r\n")
     else:
         # STANDARD SYNC Launch for everything else
-        lines.append(f"start /wait \"\" \"{appwine}\" {appargs}\r\n")
+        lines.append(f"start /wait \"\" \"{app_wine}\" {app_args}\r\n")
 
     # Signal game exit to the launcher via marker file so it doesn't
     # have to wait for Proton's wineserver to fully shut down.
     marker = scripts / f"{appid}.exit"
     marker.unlink(missing_ok=True)
-    markerwine = towinepath(marker)
-    lines.append(f"echo.> \"{markerwine}\"\r\n")
+    marker_wine = to_wine_path(marker)
+    lines.append(f"echo.> \"{marker_wine}\"\r\n")
 
-    if opentrackexec:
+    if opentrack_exec:
         lines.append("taskkill /IM opentrack.exe /F >nul 2>&1\r\n")
 
     if args.acbridge:
@@ -901,7 +899,7 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
         lines.append("taskkill /IM TrackIR.exe /F >nul 2>&1\r\n")
 
     # Kill SimHub if it was launched in the same prefix
-    if simhubwine:
+    if simhub_wine:
         lines.append(f"taskkill /IM {args.simhub_exe} /F >nul 2>&1\r\n")
 
     try:
@@ -914,19 +912,7 @@ def getlaunchscript(appid: str, opentrackexec: Optional[Path], simhubexec: Optio
     return script
 
 
-def makehome() -> None:
-    """Create the launcher home directory if it doesn't exist."""
-    try:
-        if not LAUNCHERHOME.is_dir():
-            LAUNCHERHOME.mkdir(parents=True, exist_ok=True)
-            info(f"Created launcher home directory: {LAUNCHERHOME}")
-    except PermissionError as e:
-        panic(f"Permission denied creating launcher home directory {LAUNCHERHOME}: {e}")
-    except Exception as e:
-        panic(f"Failed to create launcher home directory {LAUNCHERHOME}: {e}")
-
-
-def check7z() -> None:
+def check_7z() -> None:
     """Verify 7z is installed and store the binary path."""
     state.zip_binary = which("7z") or which("7za")
     if not state.zip_binary:
@@ -959,14 +945,13 @@ def setup_simshmbridge() -> bool:
         info("simshmbridge is already set up")
         return True
 
-    if needs_clone or needs_build:
-        missing_deps = check_simshmbridge_dependencies()
-        if missing_deps:
-            error("Cannot setup simshmbridge - missing dependencies:")
-            for dep in missing_deps:
-                error(f"  - {dep}")
-            error("Please install the missing packages and try again")
-            return False
+    missing_deps = check_simshmbridge_dependencies()
+    if missing_deps:
+        error("Cannot setup simshmbridge - missing dependencies:")
+        for dep in missing_deps:
+            error(f"  - {dep}")
+        error("Please install the missing packages and try again")
+        return False
 
     # Create clean environment without Steam's LD_PRELOAD and other interference
     clean_env = os.environ.copy()
@@ -1319,9 +1304,11 @@ def perform_cleanup(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
+    _init()
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    check7z()
+    if args.opentrack:
+        check_7z()
 
     # Setup simshmbridge if any bridge is requested or SimHub needs it
     needs_bridge = args.acbridge or args.pc2bridge or (args.simhub and not args.simhub_same_prefix)
@@ -1330,23 +1317,24 @@ def main() -> None:
         if not setup_simshmbridge():
             panic("Failed to setup simshmbridge - cannot continue with bridge support")
 
-    validate_paths()
+    if not validate_paths():
+        info("Continuing despite validation warnings...")
 
-    appid = findappid()
-    opentrackexec = getopentrack()
-    simhubexec = getsimhub(appid)
+    appid = find_appid()
+    opentrack_exec = get_opentrack()
+    simhub_exec = get_simhub(appid)
 
-    launcherscript = getlaunchscript(appid, opentrackexec, simhubexec)
+    launcher_script = get_launch_script(appid, opentrack_exec, simhub_exec)
 
     # Dry run mode - show what would be launched
     if args.dry_run:
         info("=== DRY RUN MODE ===")
         info(f"AppID: {appid}")
-        info(f"Launch script: {launcherscript}")
-        if opentrackexec:
-            info(f"OpenTrack: {opentrackexec}")
-        if simhubexec:
-            info(f"SimHub: {simhubexec}")
+        info(f"Launch script: {launcher_script}")
+        if opentrack_exec:
+            info(f"OpenTrack: {opentrack_exec}")
+        if simhub_exec:
+            info(f"SimHub: {simhub_exec}")
         if args.acbridge:
             info(f"AC Bridge: {ACSIMSHM}")
         if args.pc2bridge:
@@ -1368,13 +1356,20 @@ def main() -> None:
     # Shared protontricks setup for SimHub in separate prefix
     pt_launcher = None
     clean_env = None
-    if args.simhub and simhubexec and not args.simhub_same_prefix:
+    if args.simhub and simhub_exec and not args.simhub_same_prefix:
         pt_launcher = which("protontricks-launch")
         if not pt_launcher:
             error("protontricks-launch not found - cannot launch SimHub in separate prefix")
         else:
             clean_env = os.environ.copy()
-            for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME", "STEAM_RUNTIME_LIBRARY_PATH"]:
+            for var in list(clean_env):
+                if var.startswith(("STEAM_COMPAT", "PROTON", "WINE", "SteamGame",
+                                   "SteamAppId", "SteamOverlay")):
+                    clean_env.pop(var)
+            for var in ["LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME",
+                        "STEAM_RUNTIME_LIBRARY_PATH", "WINEPREFIX",
+                        "WINEESYNC", "WINEFSYNC", "WINELOADERNOEXEC",
+                        "WINEDLLPATH", "WINEDEBUG"]:
                 clean_env.pop(var, None)
 
     # Everything from here on needs cleanup if interrupted
@@ -1383,7 +1378,7 @@ def main() -> None:
         if args.lookpilot:
             info("Launching LookPilot...")
             try:
-                state.lookpilot_proc = Popen(["steam", "steam://rungameid/3326890"])
+                state.lookpilot_proc = Popen(["steam", f"steam://rungameid/{LOOKPILOT_APPID}"])
                 info(f"LookPilot launched (PID: {state.lookpilot_proc.pid})")
             except FileNotFoundError:
                 error("Failed to launch LookPilot: steam command not found")
@@ -1429,11 +1424,11 @@ def main() -> None:
                     error(f"Failed to launch PC2 Bridge: {e}")
 
         # Launch SimHub BEFORE the game (it's slow to start)
-        if args.simhub and simhubexec and not args.simhub_same_prefix and pt_launcher:
+        if args.simhub and simhub_exec and not args.simhub_same_prefix and pt_launcher:
             info(f"Launching SimHub: {args.simhub_exe} (AppID: {state.simhub_appid})")
             try:
                 state.simhub_proc = Popen(
-                    [pt_launcher, "--appid", str(state.simhub_appid), str(simhubexec)],
+                    [pt_launcher, "--appid", str(state.simhub_appid), str(simhub_exec)],
                     env=clean_env, start_new_session=True,
                     stdout=DEVNULL, stderr=DEVNULL)
                 info(f"SimHub launched (PID: {state.simhub_proc.pid})")
@@ -1442,7 +1437,7 @@ def main() -> None:
             except Exception as e:
                 error(f"Failed to launch SimHub: {e}")
                 state.simhub_proc = None
-        elif args.simhub and simhubexec and args.simhub_same_prefix:
+        elif args.simhub and simhub_exec and args.simhub_same_prefix:
             info("SimHub will be launched from batch script with delay before game starts")
 
         # Prepare and launch the main game
@@ -1450,7 +1445,7 @@ def main() -> None:
         exe_found = False
         for i in range(len(final_argv) - 1, -1, -1):
             if final_argv[i].endswith(".exe"):
-                final_argv[i] = str(launcherscript)
+                final_argv[i] = str(launcher_script)
                 exe_found = True
                 break
 
@@ -1467,7 +1462,7 @@ def main() -> None:
             panic(f"Failed to launch main game: {e}")
 
         # Launch Proton Bridge AFTER the game (needs the game's Proton running)
-        if args.simhub and simhubexec and not args.simhub_same_prefix and pt_launcher:
+        if args.simhub and simhub_exec and not args.simhub_same_prefix and pt_launcher:
             # Create hardlink for bridge
             if state.proton_bridge and state.proton_bridge.exists():
                 state.proton_bridge.unlink()
